@@ -10,5 +10,8 @@
 *.otf filter=lfs diff=lfs merge=lfs -text
 *.wav filter=lfs diff=lfs merge=lfs -text
 
+# 个人分支的 APP 图片直接保存在 Git 历史中，避免新资源依赖已超限的 LFS 配额。
+APP/**/*.png -filter -diff -merge -text
+
 openpilot/selfdrive/car/tests/test_models_segs.txt filter=lfs diff=lfs merge=lfs -text
 openpilot/common/hardware/comma/updater filter=lfs diff=lfs merge=lfs -text
