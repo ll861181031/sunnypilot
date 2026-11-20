@@ -1,0 +1,204 @@
+{
+  "name": "road_users_detailed_v3",
+  "version": 3,
+  "note": "2026-10-27 在 v2 基础上把四类三轮车合并为 tricycle（三轮车）；两轮/三轮框包含骑行者/驾驶员，person 只标不在车上的行人。",
+  "classes": [
+    {
+      "id": 0,
+      "name": "person",
+      "zh": "行人",
+      "desc": "站立/行走/跑步的人；不含骑在车上的人；框包可见全身",
+      "color": [
+        56,
+        56,
+        255
+      ]
+    },
+    {
+      "id": 1,
+      "name": "two_wheeler",
+      "zh": "两轮车",
+      "desc": "自行车/电动两轮车/摩托车统一为一类；框包含骑行者，person 只标不在车上的行人",
+      "color": [
+        0,
+        200,
+        0
+      ]
+    },
+    {
+      "id": 2,
+      "name": "tricycle",
+      "zh": "三轮车",
+      "desc": "载货/带棚/载客/其他三轮车统一为一类；框包含驾驶员/骑行者",
+      "color": [
+        0,
+        160,
+        255
+      ]
+    },
+    {
+      "id": 3,
+      "name": "car",
+      "zh": "小汽车",
+      "desc": "轿车/SUV/MPV/掀背/跑车；不含面包车、货车",
+      "color": [
+        0,
+        255,
+        0
+      ]
+    },
+    {
+      "id": 4,
+      "name": "van",
+      "zh": "面包车",
+      "desc": "厢式面包车/小型客货两用（≤9座，如金杯/五菱宏光）",
+      "color": [
+        0,
+        255,
+        120
+      ]
+    },
+    {
+      "id": 5,
+      "name": "truck",
+      "zh": "货车",
+      "desc": "轻卡/中重卡/自卸/厢式货车；不含三轮",
+      "color": [
+        0,
+        180,
+        0
+      ]
+    },
+    {
+      "id": 6,
+      "name": "bus",
+      "zh": "客车",
+      "desc": "公交/大巴/中巴（>9座）",
+      "color": [
+        0,
+        255,
+        255
+      ]
+    },
+    {
+      "id": 7,
+      "name": "trailer",
+      "zh": "挂车/房车",
+      "desc": "被拖挂的挂车、房车、拖斗",
+      "color": [
+        120,
+        120,
+        255
+      ]
+    },
+    {
+      "id": 8,
+      "name": "special_vehicle",
+      "zh": "特种车辆",
+      "desc": "警车/救护车/消防车/工程车（有明显标识或警灯）",
+      "color": [
+        255,
+        0,
+        0
+      ]
+    },
+    {
+      "id": 9,
+      "name": "stroller",
+      "zh": "婴儿车",
+      "desc": "手推婴儿车/遛娃车",
+      "color": [
+        255,
+        180,
+        180
+      ]
+    },
+    {
+      "id": 10,
+      "name": "wheelchair",
+      "zh": "轮椅",
+      "desc": "手动/电动轮椅及乘坐者",
+      "color": [
+        180,
+        120,
+        255
+      ]
+    },
+    {
+      "id": 11,
+      "name": "animal",
+      "zh": "动物",
+      "desc": "狗/猫/牲畜等",
+      "color": [
+        180,
+        255,
+        180
+      ]
+    },
+    {
+      "id": 12,
+      "name": "cone",
+      "zh": "交通锥",
+      "desc": "锥桶/警示柱",
+      "color": [
+        255,
+        128,
+        0
+      ]
+    },
+    {
+      "id": 13,
+      "name": "barrier",
+      "zh": "护栏/水马",
+      "desc": "施工围挡/水马/可移动隔离栏",
+      "color": [
+        255,
+        200,
+        0
+      ]
+    },
+    {
+      "id": 14,
+      "name": "traffic_light",
+      "zh": "交通信号灯",
+      "desc": "机动车/非机动车/人行信号灯",
+      "color": [
+        255,
+        255,
+        0
+      ]
+    },
+    {
+      "id": 15,
+      "name": "traffic_sign",
+      "zh": "交通标志",
+      "desc": "限速/指示/警告/停止牌",
+      "color": [
+        200,
+        200,
+        0
+      ]
+    },
+    {
+      "id": 16,
+      "name": "other_obstacle",
+      "zh": "其他障碍物",
+      "desc": "落石/货物/未知占道物",
+      "color": [
+        160,
+        160,
+        160
+      ]
+    }
+  ],
+  "coco_to_taxonomy": {
+    "person": "person",
+    "bicycle": "two_wheeler",
+    "motorcycle": "two_wheeler",
+    "car": "car",
+    "truck": "truck",
+    "bus": "bus",
+    "traffic light": "traffic_light",
+    "stop sign": "traffic_sign"
+  }
+}

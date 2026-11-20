@@ -9,13 +9,14 @@ import time
 import pyray as rl
 
 from openpilot.cereal import custom
-from openpilot.selfdrive.ui.mici.widgets.dialog import BigConfirmationDialog, BigDialog
+from openpilot.selfdrive.ui.mici.widgets.dialog import BigConfirmationDialog
 from openpilot.sunnypilot.models.helpers import ACTIVE_BUNDLE_KEYS, get_selected_bundle
-from openpilot.selfdrive.ui.mici.widgets.button import BigButton
+from openpilot.selfdrive.ui.mici.widgets.button import BigButton, BigParamControl
 from openpilot.selfdrive.ui.ui_state import ui_state, device
-from openpilot.selfdrive.ui.sunnypilot.model_info import (active_source, big_model_state, bundles_for_source, carrying_model,
-                                                           default_model_name, model_cache_size_mb, model_info, queued_name,
-                                                           refresh_in_progress, refresh_model_list)
+from openpilot.selfdrive.ui.sunnypilot.model_info import (LOCAL_BUNDLE_REF, active_source, big_model_state, bundles_for_source,
+                                                           carrying_model, default_choice_label, default_model_name,
+                                                           model_cache_size_mb, model_info, queued_name, refresh_in_progress,
+                                                           refresh_model_list)
 from openpilot.system.ui.lib.application import FontWeight, gui_app
 from openpilot.system.ui.lib.multilang import tr
 from openpilot.system.ui.widgets import Widget
@@ -95,7 +96,10 @@ class ModelsLayoutMici(NavScroller):
     self.clear_cache_btn.set_click_callback(self._confirm_clear_cache)
     self._cache_size_time = 0.0
 
-    self.main_items = [self.current_model_info, self.select_model_btn, self.cancel_download_btn, self.refresh_btn, self.clear_cache_btn]
+    self.blendful_toggle = BigParamControl(tr("blendful (alpha)"), "Blendful")
+
+    self.main_items = [self.current_model_info, self.select_model_btn, self.cancel_download_btn, self.refresh_btn, self.clear_cache_btn,
+                       self.blendful_toggle]
     self._scroller.add_widgets(self.main_items)
 
   @property
@@ -126,7 +130,7 @@ class ModelsLayoutMici(NavScroller):
     active = active_source()
     for source, label in (("qcom", tr("small models")), ("chestnut", tr("big models"))):
       bundle = get_selected_bundle(ui_state.params, source)
-      value = (bundle.internalName if bundle else default_model_name(source)).lower()
+      value = (bundle.internalName if bundle else default_choice_label(source)).lower()
       if source == active:
         value += f" ({tr('active')})"
       btn = BigButton(label.lower(), value=value)
@@ -141,14 +145,10 @@ class ModelsLayoutMici(NavScroller):
     favorites = set(favs.split(';')) if favs else set()
 
     bundles = bundles_for_source(source)
-    if not bundles:
-      gui_app.push_widget(BigDialog(title=tr("No models available"),
-                                    description=tr("No models are available for this hardware yet. Connect to the internet and refresh the model list.")))
-      return
     folders = self._get_grouped_bundles(bundles, favorites)
 
     folder_buttons = []
-    default_btn = BigButton(default_model_name(source).lower())
+    default_btn = BigButton(default_choice_label(source).lower())
     default_btn.set_click_callback(lambda s=source: self._select_default(s))
     folder_buttons.append(default_btn)
 
@@ -166,7 +166,18 @@ class ModelsLayoutMici(NavScroller):
     self._scroller.scroll_panel.set_offset(0.0)
 
   def _select_model(self, bundle):
-    ui_state.params.put("ModelManager_DownloadRef", bundle.ref)
+    # The list only offers artifacts that are already on disk, so select it
+    # directly instead of queueing a download.
+    if self._selection_source in ACTIVE_BUNDLE_KEYS:
+      ui_state.params.put(ACTIVE_BUNDLE_KEYS[self._selection_source], bundle.to_dict(), block=True)
+      # modeld notices the changed slot and reloads in place (model_swap_target),
+      # so the pick takes effect without cycling the stack.
+      if self._selection_source == "qcom":
+        # Small-model choice wins over a local big pick: the big row falls back
+        # to Default instead of silently outranking what was just selected.
+        big = get_selected_bundle(ui_state.params, "chestnut")
+        if big is not None and (big.ref or "") == LOCAL_BUNDLE_REF:
+          ui_state.params.remove("ModelManager_ActiveBundleChestnut")
     self._pop_to_main()
 
   def _select_default(self, source):
@@ -212,6 +223,16 @@ class ModelsLayoutMici(NavScroller):
     self.cancel_download_btn.set_visible(False)
     self.current_model_info.current_model_header._shimmer = False
     self.current_model_info.info_header._shimmer = False
+
+    # Upstream greys this out unless the tinygrad runner is live (that is the only
+    # runner with Blendful there). This fork wires Blendful into the stock runner as
+    # well, so the gate asks the wider question: does the launched modeld have it.
+    blendful_allowed = ui_state.blendful_supported()
+    self.blendful_toggle.set_enabled(blendful_allowed)
+    if blendful_allowed:
+      self.blendful_toggle.refresh()
+    else:
+      self.blendful_toggle.set_checked(False)
 
     manager = self.model_manager
     self._download_frame += 1

@@ -9,6 +9,7 @@ from dataclasses import dataclass
 
 from openpilot.common.constants import CV
 from openpilot.selfdrive.ui.ui_state import ui_state
+from openpilot.system.ui.lib.multilang import tr
 from openpilot.system.ui.lib.text_measure import measure_text_cached
 
 
@@ -27,7 +28,9 @@ class UiElement:
   total_width: float = 0.0
 
   def measure(self, font, font_size: int):
-    self.label_text = f"{self.label} "
+    # Translate here rather than in each element's update(): this runs every frame, so
+    # switching language in settings takes effect immediately instead of on restart.
+    self.label_text = f"{tr(self.label)} "
     self.val_text = self.value
     self.unit_text = f" {self.unit}" if self.unit else ""
 

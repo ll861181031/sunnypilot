@@ -29,6 +29,7 @@ from openpilot.selfdrive.ui.mici.layouts.settings.network import WifiNetworkButt
 from openpilot.selfdrive.ui.mici.layouts.settings.network.wifi_ui import WifiUIMici
 from openpilot.selfdrive.ui.mici.widgets.dialog import BigInputDialog, BigConfirmationCircleButton
 from openpilot.selfdrive.ui.mici.widgets.button import BigButton, GreyBigButton
+from openpilot.system.ui.lib.multilang import tr
 
 NetworkType = log.DeviceState.NetworkType
 
@@ -104,7 +105,7 @@ class StartPage(Widget):
   def __init__(self):
     super().__init__()
 
-    self._title = UnifiedLabel("start", 64, text_color=rl.Color(255, 255, 255, int(255 * 0.9)),
+    self._title = UnifiedLabel(tr("start"), 64, text_color=rl.Color(255, 255, 255, int(255 * 0.9)),
                                font_weight=FontWeight.DISPLAY, alignment=TextAlignment.CENTER,
                                alignment_vertical=TextAlignmentVertical.MIDDLE)
 
@@ -174,16 +175,16 @@ class CustomSoftwareWarningPage(NavScroller):
     super().__init__()
     self.set_back_callback(back_callback)
 
-    self._continue_button = BigPillButton("next")
+    self._continue_button = BigPillButton(tr("next"))
     self._continue_button.set_click_callback(continue_callback)
 
     self._scroller.add_widgets([
-      GreyBigButton("caution: installing\n3rd party software", "swipe down to go back",
+      GreyBigButton(tr("caution: installing\n3rd party software"), "swipe down to go back",
                     gui_app.texture("icons_mici/setup/warning.png", 64, 58)),
       GreyBigButton("", "• It has not been tested by comma."),
       GreyBigButton("", "• It may not comply with safety standards."),
       GreyBigButton("", "• It may damage your device and/or vehicle."),
-      GreyBigButton("how to restore to a\nfactory state later", "https://flash.comma.ai",
+      GreyBigButton(tr("how to restore to a\nfactory state later"), "https://flash.comma.ai",
                     gui_app.texture("icons_mici/setup/restore.png", 64, 64)),
       self._continue_button,
     ])
@@ -194,7 +195,7 @@ class DownloadingPage(NavWidget):
   def __init__(self):
     super().__init__()
 
-    self._title_label = UnifiedLabel("downloading...", 64, text_color=rl.Color(255, 255, 255, int(255 * 0.9)),
+    self._title_label = UnifiedLabel(tr("downloading..."), 64, text_color=rl.Color(255, 255, 255, int(255 * 0.9)),
                                      font_weight=FontWeight.DISPLAY)
     self._progress_label = UnifiedLabel("", 132, text_color=rl.Color(255, 255, 255, int(255 * 0.9 * 0.65)),
                                         font_weight=FontWeight.ROMAN, alignment_vertical=TextAlignmentVertical.BOTTOM)
@@ -301,7 +302,7 @@ class NetworkSetupPageBase(Scroller):
     self._custom_software = False
     self._wifi_ui = WifiUIMici(self._wifi_manager)
 
-    self._connect_button = GreyBigButton("connect to\ninternet", "swipe down to go back",
+    self._connect_button = GreyBigButton(tr("connect to\ninternet"), "swipe down to go back",
                                          gui_app.texture("icons_mici/setup/small_slider/slider_arrow.png", 64, 56, flip_x=True))
     self._connect_button.set_visible(not disable_connect_hint)
 
@@ -320,9 +321,9 @@ class NetworkSetupPageBase(Scroller):
       # trigger grow when wifi button in view
       self._pending_wifi_grow_animation = True
 
-    self._waiting_button = BigPillButton("connect to\ncontinue", disabled_background=True)
+    self._waiting_button = BigPillButton(tr("connect to\ncontinue"), disabled_background=True)
     self._waiting_button.set_click_callback(on_waiting_click)
-    self._continue_button = BigPillButton("install openpilot", green=True)
+    self._continue_button = BigPillButton(tr("install openpilot"), green=True)
     self._continue_button.set_click_callback(lambda: continue_callback(self._custom_software))
 
     self._scroller.add_widgets([

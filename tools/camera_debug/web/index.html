@@ -1,0 +1,69 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>摄像头调试 · 读取速率</title>
+<link rel="stylesheet" href="/web/style.css">
+</head>
+<body>
+<header>
+  <div class="title">
+    <h1>摄像头调试</h1>
+    <span id="stackHint" class="muted small"></span>
+  </div>
+  <div class="muted small">
+    选 1~2 个相机、设分辨率与帧率，实时看每个相机的读取速率；两路同时跑时对比「单独 ↔ 同时」。
+    <span id="v4l2Hint"></span>
+  </div>
+</header>
+
+<main>
+  <section class="card">
+    <h2>1. 选择相机与模式</h2>
+    <div id="slots" class="slots"></div>
+    <div id="busHint" class="warn" hidden></div>
+    <div class="row actions">
+      <button id="btnStart" class="primary">开始采集</button>
+      <button id="btnStop" disabled>停止采集</button>
+      <button id="btnRefresh" class="ghost">重新扫描设备</button>
+      <span id="startMsg" class="msg"></span>
+    </div>
+    <div id="warnBox" class="warn hidden"></div>
+  </section>
+
+  <section class="card">
+    <h2>2. 实时速率</h2>
+    <div id="live" class="live"><div class="muted">未在采集。选好相机后点「开始采集」。</div></div>
+  </section>
+
+  <section class="card">
+    <h2>3. 单独 ↔ 同时 对比</h2>
+    <div class="row actions">
+      <button id="btnExport" class="ghost">导出 JSON</button>
+      <button id="btnCopy" class="ghost">复制摘要</button>
+      <button id="btnClear" class="ghost danger">清空记录</button>
+      <span id="copyMsg" class="msg"></span>
+    </div>
+    <div id="compare" class="muted small">还没有记录。先只跑一个相机，再跑两个，这里就会出现同一设备的「单独 vs 同时」。</div>
+    <details>
+      <summary>全部会话记录</summary>
+      <div id="sessions" class="muted small"></div>
+    </details>
+  </section>
+
+  <section class="card notes">
+    <h2>口径说明（为什么这些数字可信）</h2>
+    <ul>
+      <li><b>配置 / 协商</b>：配置是请求值，协商是驱动真正给出的值（<code>cap.get()</code>）。UVC 会静默回退到别的模式，两者不一致就说明请求没被满足。</li>
+      <li><b>实测读取速率</b>：采集线程每 1 秒滑动窗口内成功 <code>read()</code> 的帧数。这是硬件真实供帧速率，不是按请求值算出来的。</li>
+      <li><b>预览不参与计数</b>：MJPG 模式下驱动交出的帧本身就是 JPEG，预览直接原样转发，既不解码也不重编；编码（若需要）发生在 HTTP 线程而不是采集线程。</li>
+      <li><b>单独 ↔ 同时</b>：两台相机共用一条 USB 2.0 总线，同一设备在两路同时跑时的速率往往低于单独跑。对比表按「设备 + 模式」配对。</li>
+      <li><b>占用</b>：采集期间相机被本工具独占，行车栈（camerad）无法同时使用；反过来若 camerad 正在跑，这里会打不开并显示占用它的 PID。本工具不会去关闭任何别的进程。</li>
+    </ul>
+  </section>
+</main>
+
+<script src="/web/app.js"></script>
+</body>
+</html>

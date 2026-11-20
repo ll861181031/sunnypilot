@@ -173,10 +173,12 @@ class Params:
     """Write a parameter. block=True waits until it is persisted to disk."""
     k = self.check_key(key)
     value = self._put_cast(k, dat)
-    params_put(self.p, k, value, len(value), block)
+    if (rc := params_put(self.p, k, value, len(value), block)) != 0:
+      raise OSError(f"参数 {key!r} 写入失败（返回码 {rc}）")
 
   def put_bool(self, key, val, block=False):
-    params_put_bool(self.p, self.check_key(key), val, block)
+    if (rc := params_put_bool(self.p, self.check_key(key), val, block)) != 0:
+      raise OSError(f"参数 {key!r} 写入失败（返回码 {rc}）")
 
   def remove(self, key):
     params_remove(self.p, self.check_key(key))
@@ -194,7 +196,7 @@ class Params:
       for i in range(params_keys_size(self.p)):
         keys.append(_copy_string(params_key_at(self.p, i)))
       return keys
-    max_keys = 1024
+    max_keys = params_keys_size(self.p)
     buf = (ParamsBuffer * max_keys)()
     count = params_keys_by_flag(self.p, int(flag), buf, max_keys)
     return [_copy_string(buf[i]) for i in range(min(count, max_keys))]

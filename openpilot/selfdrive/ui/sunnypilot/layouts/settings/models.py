@@ -12,8 +12,9 @@ from openpilot.cereal import custom
 from openpilot.sunnypilot.models.helpers import ACTIVE_BUNDLE_KEYS, get_selected_bundle, resolve_bundle_by_ref
 from openpilot.common.constants import CV
 from openpilot.selfdrive.ui.ui_state import device, ui_state
-from openpilot.selfdrive.ui.sunnypilot.model_info import (big_model_state, bundles_for_source, carrying_model, default_model_name,
-                                                           model_cache_size_mb, queued_name, refresh_in_progress, refresh_model_list)
+from openpilot.selfdrive.ui.sunnypilot.model_info import (LOCAL_BUNDLE_REF, big_model_state, bundles_for_source, carrying_model,
+                                                           default_choice_label, default_model_name, model_cache_size_mb,
+                                                           queued_name, refresh_in_progress, refresh_model_list, slot_entry)
 from openpilot.system.ui.lib.multilang import tr
 from openpilot.system.ui.lib.application import gui_app
 from openpilot.system.ui.widgets import DialogResult, Widget
@@ -48,9 +49,6 @@ class ModelsLayout(Widget):
     self._initialize_items()
 
     self.clear_cache_item.action_item.set_value(f"{self.calculate_cache_size():.2f} MB")
-    for ctrl, key in [(self.lane_turn_value_control, "LaneTurnValue"), (self.delay_control, "LagdToggleDelay"), (self.camera_offset, "CameraOffset")]:
-      ctrl.action_item.set_value(int(float(ui_state.params.get(key, return_default=True)) * 100))
-
     self._scroller = Scroller(self.items, line_separator=True, spacing=0)
 
   def _initialize_items(self):
@@ -102,13 +100,19 @@ class ModelsLayout(Widget):
 
     self.lagd_toggle = toggle_item_sp(tr("Live Learning Steer Delay"), "", param="LagdToggle")
 
+    self._blendful_desc = tr("Adds a gentle nudge toward lane centre on top of the model's own steering, " +
+                             "stronger when lane lines are clear. Yields around obstacles instead of " +
+                             "steering through them. Off by default; it only shapes the planned path and " +
+                             "cannot widen any safety limit.")
+    self.blendful_toggle = toggle_item_sp(tr("Blendful (Alpha)"), self._blendful_desc, param="Blendful")
+
     self.camera_offset = option_item_sp(tr("Adjust Camera Offset"), "CameraOffset", -35, 35,
                                         tr("Virtually shift camera's perspective to move model's center to Left(+ values) or Right (- values)"),
                                         1, None, True, "", style.BUTTON_ACTION_WIDTH, None, True,
                                         lambda v: f"{v / 100:.2f} m")
 
     self.items = [self.small_model_item, self.big_model_item, self.cancel_download_item, self.download_item, self.refresh_item, self.clear_cache_item,
-                  self.lane_turn_desire_toggle, self.lane_turn_value_control, self.lagd_toggle, self.delay_control, self.camera_offset]
+                  self.lane_turn_desire_toggle, self.lane_turn_value_control, self.lagd_toggle, self.delay_control, self.blendful_toggle, self.camera_offset]
 
   def _update_lagd_description(self, lagd_toggle: bool):
     desc = tr("Enable this for the car to learn and adapt its steering response time. Disable to use a fixed steering response time. " +
@@ -175,16 +179,17 @@ class ModelsLayout(Widget):
     driving (runner-matched, so a failed Default big greens neither slot), an empty
     slot shows its default."""
     big_state = big_model_state()
-    carry_source, carry_internal, _ = carrying_model()
+    carry_source, _, _ = carrying_model()
     segments = []
     for source, label in (("qcom", tr("small")), ("chestnut", tr("big"))):
       if segments:
         segments.append(("|", rl.GRAY, None, None))
-      bundle = get_selected_bundle(ui_state.params, source)
-      name = bundle.internalName if bundle else default_model_name(source)
-      color = ON_COLOR if (source == carry_source and name == carry_internal) else rl.LIGHTGRAY
+      name, driving = slot_entry(source)
+      color = ON_COLOR if driving else rl.LIGHTGRAY
       name = "● " + name
-      if source == "chestnut":
+      # a local iGPU build drives from outside both slots, so the chestnut
+      # loading/failed colours do not describe it
+      if source == "chestnut" and carry_source != "igpu":
         if big_state == 'failed':
           color = rl.RED
         elif big_state == 'loading':
@@ -258,7 +263,22 @@ class ModelsLayout(Widget):
         ui_state.params.remove(ACTIVE_BUNDLE_KEYS[self._selection_source])
       return
     if selected_bundle := self._resolve_selected_bundle(selected_ref):
-      ui_state.params.put("ModelManager_DownloadRef", selected_bundle.ref)
+      # The list only offers artifacts that are already on disk, so select it
+      # directly instead of queueing a download.
+      if self._selection_source in ACTIVE_BUNDLE_KEYS:
+        ui_state.params.put(ACTIVE_BUNDLE_KEYS[self._selection_source], selected_bundle.to_dict(), block=True)
+        # modeld reloads the artifact in place when this slot changes (see
+        # helpers.model_swap_target), so no stack cycle is needed here. The old
+        # OnroadCycleRequested write only reset deviceState.started; it never
+        # restarted modeld, so the pick stayed unloaded until the next launch.
+        if self._selection_source == "qcom":
+          # Choosing a small model is an explicit "use small": drop a local big
+          # pick so the last choice wins and the Big Model row goes back to
+          # Default. modeld_pkl_path() prefers the big pick, so without this the
+          # small choice would look ignored.
+          big = get_selected_bundle(ui_state.params, "chestnut")
+          if big is not None and (big.ref or "") == LOCAL_BUNDLE_REF:
+            ui_state.params.remove("ModelManager_ActiveBundleChestnut")
 
   def _resolve_selected_bundle(self, ref):
     source_bundles = {source: bundles_for_source(source) for source in ("qcom", "chestnut")}
@@ -277,7 +297,11 @@ class ModelsLayout(Widget):
     folders_list = []
     for folder, folder_bundles in sorted(folders.items(), key=lambda x: max((bundle.index for bundle in x[1]), default=-1), reverse=True):
       folder_bundles.sort(key=lambda bundle: bundle.index, reverse=True)
-      name = folder + (f" - (Updated: {m.group(1)})" if folder_bundles and (m := re.search(r'\(([^)]*)\)[^(]*$', folder_bundles[0].displayName)) else "")
+      # Only a parenthesised date marks an update. Local artifacts read like
+      # 'TSFDOM (100 MB, local)', which the old pattern turned into a folder
+      # named ' - (Updated: 100 MB, local)'.
+      updated = re.search(r'\(([^)]*\d{4})\)[^(]*$', folder_bundles[0].displayName) if folder_bundles else None
+      name = folder + (f" - (Updated: {updated.group(1)})" if updated else "")
       folders_list.append(TreeFolder(name, [self._bundle_to_node(bundle) for bundle in folder_bundles]))
 
     if favorites and (fav_bundles := [bundle for bundle in bundles if bundle.ref in favorites]):
@@ -290,7 +314,7 @@ class ModelsLayout(Widget):
     favorites = set(favs.split(';')) if favs else set()
     folders_list = self._source_folders(favorites, source)
     if not folders_list:
-      gui_app.push_widget(alert_dialog(tr("No models are available for this hardware yet. Connect to the internet and refresh the model list.")))
+      gui_app.push_widget(alert_dialog(tr("No models are stored on this device yet. Add a compiled model to the models folder.")))
       return
     self.model_dialog = TreeOptionDialog(tr("Select a Model"), folders_list, self._slot_active_ref(source), "ModelManager_Favs",
                                          get_folders_fn=lambda favs: self._source_folders(favs, source), on_exit=self._on_model_selected)
@@ -298,9 +322,7 @@ class ModelsLayout(Widget):
 
   def _source_folders(self, favorites, source):
     bundles = bundles_for_source(source)
-    if not bundles:
-      return []
-    folders_list = [TreeFolder("", [TreeNode("Default", {'display_name': default_model_name(source)})])]
+    folders_list = [TreeFolder("", [TreeNode("Default", {'display_name': default_choice_label(source)})])]
     folders_list.extend(self._get_folders(favorites, bundles))
     return folders_list
 
@@ -325,14 +347,36 @@ class ModelsLayout(Widget):
     self.camera_offset.set_visible(camera_offset)
 
     self._update_lagd_description(live_delay)
+
+    # Upstream greys this out unless the tinygrad runner is live, because that is the
+    # only runner with Blendful there. This fork also wires it into the stock runner,
+    # so the gate is "a modeld that has Blendful is actually being launched", not
+    # "is it tinygrad". Toggling it on while it is unsupported would leave a param
+    # that looks on but reads zero every frame.
+    blendful_allowed = ui_state.blendful_supported()
+    self.blendful_toggle.action_item.set_enabled(blendful_allowed)
+    if not blendful_allowed:
+      self.blendful_toggle.action_item.set_state(False)
+    blendful_desc = self._blendful_desc if blendful_allowed else \
+      f"<b>{tr('Not available with the current model runner.')}</b><br><br>{self._blendful_desc}"
+    if self.blendful_toggle.description != blendful_desc:
+      self.blendful_toggle.set_description(blendful_desc)
+
     self.model_manager = ui_state.sm["modelManagerSP"]
     self._handle_bundle_download_progress()
 
     carry_source, _, carry_display = carrying_model()
+    igpu = carry_source == "igpu"
     for item, item_source in ((self.small_model_item, "qcom"), (self.big_model_item, "chestnut")):
       bundle = get_selected_bundle(ui_state.params, item_source)
-      name = bundle.displayName if bundle else default_model_name(item_source)
+      name = bundle.displayName if bundle else default_choice_label(item_source)
       color = ON_COLOR if (item_source == carry_source and name == carry_display) else style.ITEM_TEXT_VALUE_COLOR
+      # A locally compiled iGPU artifact bypasses both bundle slots, so neither
+      # slot is what drives. Report it on the big row instead of greening a slot
+      # that modeld is not reading.
+      if igpu and item_source == "chestnut":
+        name = carry_display
+        color = ON_COLOR
       item.action_item.set_value(name, color)
 
     note = self._status_note()

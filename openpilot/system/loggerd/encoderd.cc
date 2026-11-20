@@ -1,4 +1,6 @@
 #include <cassert>
+#include <mutex>
+#include <map>
 #ifdef __COMMA_HARDWARE__
 #include <exception>
 #include <stdexcept>
@@ -19,32 +21,55 @@
 #endif
 
 ExitHandler do_exit;
+std::atomic<bool> camera_replaced = false;
 
 struct EncoderdState {
   int max_waiting = 0;
 
-  // Sync logic for startup
-  std::atomic<int> encoders_ready = 0;
+  // 启动时对齐采集时间，帧号仅为没有时间戳的旧回放保留。
+  std::mutex sync_mutex;
+  int encoders_ready = 0;
   std::atomic<uint32_t> start_frame_id = 0;
-  bool camera_ready[VISION_STREAM_WIDE_ROAD + 1] = {};
-  bool camera_synced[VISION_STREAM_WIDE_ROAD + 1] = {};
+  std::atomic<uint64_t> start_timestamp_ns = 0;
+  std::map<VisionStreamType, bool> camera_ready;
+  std::map<VisionStreamType, bool> camera_synced;
+  bool start_ready = false;
 };
 
-// Handle initial encoder syncing by waiting for all encoders to reach the same frame id
-bool sync_encoders(EncoderdState *s, VisionStreamType cam_type, uint32_t frame_id) {
+// 先等待所有已配置摄像头就绪，再让各路跨过同一个采集时间起点。
+bool sync_encoders(EncoderdState *s, VisionStreamType cam_type, uint32_t frame_id, uint64_t timestamp_ns) {
+  std::lock_guard<std::mutex> lock(s->sync_mutex);
   if (s->camera_synced[cam_type]) return true;
 
-  if (s->max_waiting > 1 && s->encoders_ready != s->max_waiting) {
+  if (s->max_waiting > 1 && !s->start_ready) {
     // add a small margin to the start frame id in case one of the encoders already dropped the next frame
     update_max_atomic(s->start_frame_id, frame_id + 2);
-    if (std::exchange(s->camera_ready[cam_type], true) == false) {
+    if (timestamp_ns) {
+      // 固定到下一整秒，而不是“首帧 + 100 ms”。独立进程的启停和调度延迟可能
+      // 让两路首帧落在不同帧周期，后者会让首段起点随启动抖动而错开。
+      const uint64_t start_ns = (timestamp_ns / 1'000'000'000ULL + 1) * 1'000'000'000ULL;
+      if (start_ns > s->start_timestamp_ns) s->start_timestamp_ns = start_ns;
+    }
+    if (!std::exchange(s->camera_ready[cam_type], true)) {
       ++s->encoders_ready;
       LOGD("camera %d encoder ready", cam_type);
+      if (s->encoders_ready == s->max_waiting) {
+        // 所有路都登记后一次性启用起点。下面从 s->start_ready 读取，不能在
+        // 首路登记时绕过；这正是首段偶发错开 333 ms 的来源。
+        s->start_ready = true;
+        LOGD("all encoders ready, start timestamp %" PRIu64, (uint64_t)s->start_timestamp_ns);
+      }
     }
     return false;
   } else {
-    if (s->max_waiting == 1) update_max_atomic(s->start_frame_id, frame_id);
-    bool synced = frame_id >= s->start_frame_id;
+    if (s->max_waiting == 1) {
+      update_max_atomic(s->start_frame_id, frame_id);
+      if (timestamp_ns) s->start_timestamp_ns = timestamp_ns;
+      s->start_ready = true;
+    }
+    const bool synced = timestamp_ns && s->start_timestamp_ns
+        ? timestamp_ns >= s->start_timestamp_ns
+        : frame_id >= s->start_frame_id;
     s->camera_synced[cam_type] = synced;
     if (!synced) LOGD("camera %d waiting for frame %d, cur %d", cam_type, (int)s->start_frame_id, frame_id);
     return synced;
@@ -102,7 +127,16 @@ void encoder_thread(EncoderdState *s, const LogCameraInfo &cam_info) {
     while (!do_exit) {
       VisionIpcBufExtra extra;
       VisionBuf* buf = vipc_client.recv(&extra);
-      if (buf == nullptr) continue;
+      if (buf == nullptr) {
+        if (!vipc_client.is_connected()) {
+          // A replacement publisher owns different buffers and can reset frame IDs
+          // or stream dimensions. Restart all encoders together via the manager.
+          LOGE("encoder %s camera publisher replaced; restarting encoderd", cam_info.thread_name);
+          camera_replaced = true;
+          do_exit = true;
+        }
+        continue;
+      }
 
       // detect loop around and drop the frames
       if (buf->get_frame_id() != extra.frame_id) {
@@ -114,19 +148,28 @@ void encoder_thread(EncoderdState *s, const LogCameraInfo &cam_info) {
       }
       lagging = false;
 
-      if (!sync_encoders(s, cam_info.stream_type, extra.frame_id)) {
+      const uint64_t timestamp_ns = extra.timestamp_sof ? extra.timestamp_sof : extra.timestamp_eof;
+      if (!sync_encoders(s, cam_info.stream_type, extra.frame_id, timestamp_ns)) {
         continue;
       }
       if (do_exit) break;
 
-      // do rotation if required
+      // 各摄像头帧率和编号独立，正常录像使用同一个采集时间基准切段。
+      // 没有时间戳的旧回放仍按帧号兼容，不能用解码或调度时间替代采集时间。
       const int frames_per_seg = SEGMENT_LENGTH * MAIN_FPS;
-      if (cur_seg >= 0 && extra.frame_id >= ((cur_seg + 1) * frames_per_seg) + s->start_frame_id) {
+      const uint64_t start_ns = s->start_timestamp_ns;
+      if ((timestamp_ns && start_ns && timestamp_ns < start_ns) || (!timestamp_ns && extra.frame_id < s->start_frame_id)) continue;
+      const int target_seg = timestamp_ns && start_ns
+          ? (timestamp_ns - start_ns) / (uint64_t(SEGMENT_LENGTH) * 1'000'000'000ULL)
+          : (extra.frame_id - s->start_frame_id) / frames_per_seg;
+      if (cur_seg < target_seg) {
         for (auto &e : encoders) {
           e->encoder_close();
           e->encoder_open();
         }
-        ++cur_seg;
+        // 设备断流后时间戳可能一下跨过多个段。编码器不需要为已经错过的空段
+        // 每段开关一次，直接把录制段号推进到当前时间所在的段即可。
+        cur_seg = target_seg;
       }
 
       // encode a frame
@@ -165,11 +208,12 @@ void encoderd_thread(const LogCameraInfo (&cameras)[N]) {
 
   if (!streams.empty()) {
     std::vector<std::thread> encoder_threads;
+    // 在线程开始读帧前固定路数，避免首个线程把双摄误判为单摄。
+    s.max_waiting = streams.size();
     for (auto stream : streams) {
       auto it = std::find_if(std::begin(cameras), std::end(cameras),
                              [stream](auto &cam) { return cam.stream_type == stream; });
       assert(it != std::end(cameras));
-      ++s.max_waiting;
       encoder_threads.push_back(std::thread(encoder_thread, &s, *it));
     }
 
@@ -226,5 +270,5 @@ int main(int argc, char* argv[]) {
   } else {
     encoderd_thread(cameras_logged);
   }
-  return 0;
+  return camera_replaced ? 1 : 0;
 }

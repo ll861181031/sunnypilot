@@ -8,9 +8,6 @@ import json
 
 from openpilot.cereal import custom, messaging
 from opendbc.car.structs import car
-from opendbc.car.hyundai.values import CAR as HYUNDAI_CAR, UNSUPPORTED_LONGITUDINAL_CAR
-from opendbc.car.subaru.values import CAR as SUBARU_CAR, SubaruFlags
-from opendbc.sunnypilot.car.tesla.values import TeslaFlagsSP
 from openpilot.common.params import Params
 from openpilot.common.swaglog import cloudlog
 from openpilot.common.hardware import HARDWARE
@@ -79,44 +76,10 @@ def _bundle_field(bundle: dict | None, key: str) -> str:
   return bundle.get(key, "") if isinstance(bundle, dict) else ""
 
 
-def _resolve_brand_capabilities(caps: dict, bundle_platform: str, CP) -> None:
-  """Set brand-specific capabilities from bundle platform or CarParams fallback.
-
-  Bundle (manual car selection) is a pre-fingerprint approximation.
-  CarParams (auto-fingerprint) is the authoritative post-fingerprint source.
-  Mirrors the per-brand update_settings() logic in device UI layouts.
-  """
-  brand = caps["brand"]
-
-  if brand == "hyundai":
-    if bundle_platform:
-      try:
-        unsupported = set().union(*UNSUPPORTED_LONGITUDINAL_CAR.values())
-        caps["hyundai_alpha_long_available"] = HYUNDAI_CAR[bundle_platform] not in unsupported
-      except KeyError:
-        cloudlog.exception(f"capabilities: unknown hyundai platform {bundle_platform!r}")
-    elif CP is not None:
-      caps["hyundai_alpha_long_available"] = bool(CP.alphaLongitudinalAvailable)
-
-  elif brand == "subaru":
-    if bundle_platform:
-      try:
-        flags = SUBARU_CAR[bundle_platform].config.flags
-        caps["subaru_has_sng"] = not bool(flags & (SubaruFlags.GLOBAL_GEN2 | SubaruFlags.HYBRID))
-        caps["has_stop_and_go"] = caps["subaru_has_sng"]
-      except KeyError:
-        cloudlog.exception(f"capabilities: unknown subaru platform {bundle_platform!r}")
-    elif CP is not None:
-      caps["subaru_has_sng"] = not bool(CP.flags & (SubaruFlags.GLOBAL_GEN2 | SubaruFlags.HYBRID))
-      caps["has_stop_and_go"] = caps["subaru_has_sng"]
-
-
 def generate_capabilities(params: Params | None = None) -> dict:
   """Generate a SettingsCapabilities dict from CarParams + boolean params.
 
-  When CarPlatformBundle is present, brand and platform come from the bundle
-  (mirrors Raylib). CarParams* deserialization is the fallback before the bundle
-  is written (early after first pairing).
+  优先使用手动选择的品牌，首次配对尚无车型选择时读取 CarParams。
   """
   params = params or Params()
 
@@ -127,28 +90,26 @@ def generate_capabilities(params: Params | None = None) -> dict:
 
   # Hardware + boolean params (no CarParams dependency)
   caps["device_type"] = HARDWARE.get_device_type()
-  caps["is_release"] = False  # params.get_bool("IsReleaseBranch")
+  caps["is_release"] = params.get_bool("IsReleaseBranch")
   caps["is_sp_release"] = params.get_bool("IsReleaseSpBranch")
   caps["is_development"] = params.get_bool("IsDevelopmentBranch")
-  caps["stock_longitudinal"] = params.get_bool("ToyotaEnforceStockLongitudinal")
+  is_release = caps["is_release"] or caps["is_sp_release"]
 
   bundle = params.get("CarPlatformBundle")
   bundle_brand = _bundle_field(bundle, "brand")
-  bundle_platform = _bundle_field(bundle, "platform")
 
   # Bundle-first brand resolution; CP is fallback only.
   if bundle_brand:
     caps["brand"] = bundle_brand
 
   # CarParams-derived capabilities
-  CP = None
   CP_bytes = params.get("CarParamsPersistent")
   if CP_bytes is not None:
     try:
       CP = messaging.log_from_bytes(CP_bytes, car.CarParams)
-      caps["alpha_long_available"] = bool(CP.alphaLongitudinalAvailable)
+      caps["alpha_long_available"] = bool(CP.alphaLongitudinalAvailable) and not is_release
       if CP.alphaLongitudinalAvailable:
-        caps["has_longitudinal_control"] = params.get_bool("AlphaLongitudinalEnabled")
+        caps["has_longitudinal_control"] = caps["alpha_long_available"] and params.get_bool("AlphaLongitudinalEnabled")
       else:
         caps["has_longitudinal_control"] = bool(CP.openpilotLongitudinalControl)
       # CP.steerControlType is the physical control mode (angle / torque).
@@ -160,10 +121,8 @@ def generate_capabilities(params: Params | None = None) -> dict:
         caps["brand"] = str(CP.brand)
       caps["pcm_cruise"] = bool(CP.pcmCruise)
       caps["enable_bsm"] = bool(CP.enableBsm)
-      # Generic SnG fallback. Brand-specific opaque flags below override.
       caps["has_stop_and_go"] = bool(CP.openpilotLongitudinalControl)
     except Exception:
-      CP = None
       cloudlog.exception("capabilities: failed to deserialize CarParamsPersistent")
 
   # CarParamsSP-derived capabilities
@@ -173,11 +132,8 @@ def generate_capabilities(params: Params | None = None) -> dict:
       CP_SP = messaging.log_from_bytes(CP_SP_bytes, custom.CarParamsSP)
       caps["icbm_available"] = bool(CP_SP.intelligentCruiseButtonManagementAvailable)
       caps["has_icbm"] = bool(CP_SP.intelligentCruiseButtonManagementAvailable) and params.get_bool("IntelligentCruiseButtonManagement")
-      caps["tesla_has_vehicle_bus"] = bool(CP_SP.flags & TeslaFlagsSP.HAS_VEHICLE_BUS)
     except Exception:
       cloudlog.exception("capabilities: failed to deserialize CarParamsSPPersistent")
-
-  _resolve_brand_capabilities(caps, bundle_platform, CP)
 
   return caps
 

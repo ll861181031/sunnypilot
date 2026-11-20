@@ -24,6 +24,11 @@ from openpilot.system.ui.sunnypilot.widgets.list_view import toggle_item_sp
 PREBUILT_PATH = os.path.join(Paths.comma_home(), "prebuilt") if PC else "/data/openpilot/prebuilt"
 
 
+def quickboot_available() -> bool:
+  """Quickboot only exists on the device: manager_init skips it on PC."""
+  return not PC
+
+
 class DeveloperLayoutSP(DeveloperLayout):
   def __init__(self):
     super().__init__()
@@ -40,19 +45,26 @@ class DeveloperLayoutSP(DeveloperLayout):
                                                  tr("Toggle visibility of advanced sunnypilot controls.<br>This only changes the visibility of the toggles; " +
                                                     "it does not change the actual enabled/disabled state."), param="ShowAdvancedControls")
 
-    self.enable_github_runner_toggle = toggle_item_sp(tr("GitHub Runner Service"), tr("Enables or disables the GitHub runner service."),
-                                                      param="EnableGithubRunner")
+    # No GitHub runner toggle: nothing in this repository consumes that param
+    # (only the settings page and console metadata did), so the switch promised
+    # a service that was never started or stopped.
 
     self.enable_copyparty_toggle = toggle_item_sp(tr("copyparty Service"),
                                                   tr("copyparty is a very capable file server, you can use it to download your routes, view your logs " +
                                                      "and even make some edits on some files from your browser. " +
                                                      "Requires you to connect to your comma locally via its IP address."), param="EnableCopyparty")
 
-    self.prebuilt_toggle = toggle_item_sp(tr("Quickboot Mode"), "", param="QuickBootToggle", callback=self._on_prebuilt_toggled)
+    # Quickboot is a device-only boot path (manager_init guards it with `not PC`),
+    # so the switch is not offered on the desktop at all.
+    self.prebuilt_toggle = toggle_item_sp(tr("Quickboot Mode"), "", param="QuickBootToggle",
+                                          callback=self._on_prebuilt_toggled) if quickboot_available() else None
 
     self.error_log_btn = button_item(tr("Error Log"), tr("VIEW"), tr("View the error log for sunnypilot crashes."), callback=self._on_error_log_clicked)
 
-    self.items: list = [self.show_advanced_controls, self.enable_github_runner_toggle, self.enable_copyparty_toggle, self.prebuilt_toggle, self.error_log_btn,]
+    self.items: list = [self.show_advanced_controls, self.enable_copyparty_toggle]
+    if self.prebuilt_toggle is not None:
+      self.items.append(self.prebuilt_toggle)
+    self.items.append(self.error_log_btn)
 
   @staticmethod
   def _on_prebuilt_toggled(state):
@@ -88,19 +100,19 @@ class DeveloperLayoutSP(DeveloperLayout):
     disable_updates = ui_state.params.get_bool("DisableUpdates")
     show_advanced = ui_state.params.get_bool("ShowAdvancedControls")
 
-    if (prebuilt_file := os.path.exists(PREBUILT_PATH)) != ui_state.params.get_bool("QuickBootToggle"):
-      ui_state.params.put_bool("QuickBootToggle", prebuilt_file)
-      self.prebuilt_toggle.action_item.set_state(prebuilt_file)
+    if self.prebuilt_toggle is not None:
+      if (prebuilt_file := os.path.exists(PREBUILT_PATH)) != ui_state.params.get_bool("QuickBootToggle"):
+        ui_state.params.put_bool("QuickBootToggle", prebuilt_file)
+        self.prebuilt_toggle.action_item.set_state(prebuilt_file)
 
-    self.prebuilt_toggle.set_visible(show_advanced and not (self._is_release_branch or self._is_development_branch))
-    self.prebuilt_toggle.action_item.set_enabled(disable_updates)
+      self.prebuilt_toggle.set_visible(show_advanced and not (self._is_release_branch or self._is_development_branch))
+      self.prebuilt_toggle.action_item.set_enabled(disable_updates)
 
-    if disable_updates:
-      self.prebuilt_toggle.set_description(tr("When toggled on, this creates a prebuilt file to allow accelerated boot times. When toggled off, it " +
-                                              "removes the prebuilt file so compilation of locally edited cpp files can be made."))
-    else:
-      self.prebuilt_toggle.set_description(tr("Quickboot mode requires updates to be disabled.<br>Enable 'Disable Updates' in the Software panel first."))
+      if disable_updates:
+        self.prebuilt_toggle.set_description(tr("When toggled on, this creates a prebuilt file to allow accelerated boot times. When toggled off, it " +
+                                                "removes the prebuilt file so compilation of locally edited cpp files can be made."))
+      else:
+        self.prebuilt_toggle.set_description(tr("Quickboot mode requires updates to be disabled.<br>Enable 'Disable Updates' in the Software panel first."))
 
     self.enable_copyparty_toggle.set_visible(show_advanced)
-    self.enable_github_runner_toggle.set_visible(show_advanced and not self._is_release_branch)
     self.error_log_btn.set_visible(not self._is_release_branch)

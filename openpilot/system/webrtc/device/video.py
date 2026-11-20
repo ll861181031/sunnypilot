@@ -8,6 +8,7 @@ from teleoprtc.tracks import TiciVideoStreamTrack
 from openpilot.cereal import messaging
 from openpilot.common.realtime import DT_MDL
 from openpilot.common.params import Params
+from openpilot.common.camera_config import driver_camera_enabled
 
 
 # v4l2 buffer flag marking an encoded keyframe (linux/videodev2.h)
@@ -53,6 +54,8 @@ class LiveStreamVideoStreamTrack(TiciVideoStreamTrack):
     self._sock = None
 
   def _make_sock(self, camera_type: str) -> messaging.SubSocket:
+    if camera_type == 'driver' and not driver_camera_enabled():
+      raise ValueError('Driver camera is disabled')
     return messaging.sub_sock(self.camera_to_sock_mapping[camera_type], conflate=True)
 
   def switch_camera(self, camera_type: str) -> None:

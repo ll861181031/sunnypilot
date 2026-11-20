@@ -43,6 +43,7 @@ class ModelManagerSP:
     self.active_bundle: custom.ModelManagerSP.ModelBundle = get_active_bundle(self.params, chestnut=self.chestnut_present)
     self._chunk_size = 128 * 1000  # 128 KB chunks
     self._download_start_times: dict[str, float] = {}  # Track start time per model
+    self._last_progress_report = 0.0
     self._download_ref: bytes | str | None = None
 
   def _download_interrupted(self) -> bool:
@@ -54,6 +55,14 @@ class ModelManagerSP:
     if self.params.get("ModelManager_DownloadRef") == self._download_ref:
       self.params.remove("ModelManager_DownloadRef")
     self._download_ref = None
+
+  def _report_progress_throttled(self) -> None:
+    """Progress updates are visual; cap them at 2 Hz instead of per 128 KB chunk."""
+    now = time.monotonic()
+    if now - getattr(self, "_last_progress_report", 0.0) < 0.5:
+      return
+    self._last_progress_report = now
+    self._report_status()
 
   def _sync_artifact_progress(self, source_artifact) -> None:
     """Mirror download progress to all artifacts sharing the same filename in the selected bundle."""
@@ -104,7 +113,7 @@ class ModelManagerSP:
             model.downloadProgress.progress = progress
             model.downloadProgress.eta = self._calculate_eta(model.fileName, progress)
             self._sync_artifact_progress(model)
-            self._report_status()
+            self._report_progress_throttled()
 
     # Clean up start time after download completes
     del self._download_start_times[model.fileName]
@@ -144,7 +153,7 @@ class ModelManagerSP:
               artifact.downloadProgress.progress = progress
               artifact.downloadProgress.eta = self._calculate_eta(artifact.fileName, progress)
               self._sync_artifact_progress(artifact)
-              self._report_status()
+              self._report_progress_throttled()
         completed += 1
 
     with open(manifest_path, 'w') as f:  # noqa: ASYNC230
@@ -200,6 +209,12 @@ class ModelManagerSP:
         for i, chunk in enumerate(artifact.chunks):
           chunk_path = get_chunk_name(full_path, i, len(artifact.chunks))
           if not await verify_file(chunk_path, chunk.sha256):
+            # Remove only the bad chunk: the outer handler must not delete the
+            # good chunks that make a resume useful.
+            try:
+              os.remove(chunk_path)
+            except OSError:
+              pass
             raise ValueError(f"Hash validation failed for chunk {i+1} of {filename}")
       else:
         await self._download_file(url, full_path, artifact)
@@ -225,9 +240,16 @@ class ModelManagerSP:
 
     except Exception as e:
       cloudlog.error(f"Error downloading {filename}: {str(e)}")
-      for f in [full_path] + [p for p in (os.path.join(destination_path, f) for f in os.listdir(destination_path)) if filename in p]:
-        if os.path.isfile(f):  # noqa: ASYNC240
-          os.remove(f)
+      # Delete only the assembled file. Verified chunks are kept so the next
+      # attempt can resume; the bad chunk was removed where it was detected.
+      try:
+        # Two fast local syscalls on the error path of a download. The project has no
+        # anyio/trio (plain asyncio), so the suggested replacement is not available
+        # and the blocking window is a stat+unlink, not I/O worth offloading.
+        if os.path.isfile(full_path):  # noqa: ASYNC240
+          os.remove(full_path)
+      except OSError:
+        pass
       artifact.downloadProgress.status = custom.ModelManagerSP.DownloadStatus.failed
       artifact.downloadProgress.eta = 0
       self._sync_artifact_progress(artifact)
@@ -304,6 +326,12 @@ class ModelManagerSP:
       last_ref = ref_to_download
       resolved = resolve_bundle_by_ref(ref_to_download, self.source_models)
       if not resolved:
+        # A ref that is no longer in the catalogue (removed model, stale Param)
+        # used to stay in Params forever, which also blocked the default model
+        # download queue. Drop it and report once.
+        cloudlog.warning(f"ModelManager_DownloadRef {ref_to_download!r} is not in the catalogue; clearing it")
+        self._download_ref = ref_to_download
+        self._release_download_ref()
         return
       model_to_download, source = resolved
       self._download_ref = ref_to_download
@@ -328,7 +356,12 @@ class ModelManagerSP:
         validate_active_bundles(self.params, self.source_models)
         self.active_bundle = get_active_bundle(self.params, chestnut=self.chestnut_present)
 
-        if get_selected_bundle(self.params, "chestnut") is not None and get_selected_bundle(self.params, "qcom") is None:
+        chestnut_bundle = get_selected_bundle(self.params, "chestnut")
+        # A local ref is the desktop big-model switch, not a catalogue model:
+        # queueing the default small download for it would start a fetch the
+        # user never asked for (and it cannot succeed on an offline box).
+        chestnut_is_local = chestnut_bundle is not None and (chestnut_bundle.ref or "").startswith("local:")
+        if chestnut_bundle is not None and not chestnut_is_local and get_selected_bundle(self.params, "qcom") is None:
           if self.params.get("ModelManager_DownloadRef") is None:
             from openpilot.sunnypilot.models.model_name import DEFAULT_MODEL_REF
             if DEFAULT_MODEL_REF:
@@ -360,6 +393,12 @@ class ModelManagerSP:
         for model in selected_bundle.models:
           if model.artifact.fileName:
             active_files.append(model.artifact.fileName)
+
+    if not active_files:
+      # No selected bundle means we cannot tell which files are in use. Deleting
+      # everything here would remove the model the running modeld is reading.
+      cloudlog.warning("Refusing to clear the model cache: no selected bundle")
+      return
 
     # Remove all files except active ones (including their chunk files)
     model_dir = Paths.model_root()

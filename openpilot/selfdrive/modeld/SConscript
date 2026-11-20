@@ -6,8 +6,16 @@ from SCons.Script import Action, Value
 from openpilot.common.file_chunker import chunk_file, get_chunk_targets, get_existing_chunks
 from openpilot.common.transformations.camera import _ar_ox_fisheye, _os_fisheye
 from openpilot.common.transformations.model import MEDMODEL_INPUT_SIZE, DM_INPUT_SIZE
+
+import sys
+
+# Build-time helper scripts run on the interpreter that is running scons (the repo
+# venv), not whatever `python3` resolves to on PATH. The system interpreter lacks
+# zstandard/setproctitle, so the hardcoded name failed those targets.
+PYTHON = sys.executable
 from openpilot.selfdrive.modeld.constants import ModelConstants
-from openpilot.selfdrive.modeld.helpers import TG_INPUT_DEVICES_PATH, chestnut_present, modeld_pkl_path
+from openpilot.selfdrive.modeld.helpers import (TG_INPUT_DEVICES_PATH, chestnut_present, modeld_pkl_path, stock_modeld_pkl_path,
+                                              get_desktop_model_device, get_desktop_dm_device)
 
 
 Import('env', 'arch')
@@ -27,12 +35,30 @@ if arch == 'comma_arm64':
   from openpilot.common.hardware import HARDWARE
   camera = _os_fisheye if HARDWARE.get_device_type() == "mici" else _ar_ox_fisheye
   camera_configs = [(camera.width, camera.height)]
+  road_camera_configs = camera_configs
   tg_backend = 'QCOM'
   tg_flags = f'DEV={tg_backend} IMAGE=1 FLOAT16=1 NOLOCALS=1 JIT_BATCH_SIZE=0 OPENPILOT_HACKS=1'
 else:
   camera_configs = [(c.width, c.height) for c in (_ar_ox_fisheye, _os_fisheye)]
+  # 1920x1080 is the native publish size of the desktop USB cameras (2026-11-04).
+  # Road model only: the DM warp feeds the cabin camera and keeps its own sizes.
+  road_camera_configs = camera_configs + [(1920, 1080)]
   tg_backend = 'CPU'
   tg_flags = f'DEV=CPU' if arch == 'Darwin' else 'DEV=CPU:LLVM'
+
+# Keep the desktop road model in a separate artifact; the CPU model remains
+# available for rollback. Driver monitoring selects its backend independently.
+road_tg_flags = tg_flags
+if arch != 'comma_arm64' and get_desktop_model_device() == 'AMD':
+  if arch == 'Darwin':
+    raise ValueError('The AMD desktop model requires Linux KFD')
+  road_tg_flags = 'DEV=KFD+AMD:LLVM FLOAT16=1'
+
+dm_tg_flags, dm_prefix = tg_flags, ''
+if arch != 'comma_arm64' and get_desktop_dm_device() == 'AMD':
+  if arch == 'Darwin':
+    raise ValueError('AMD desktop driver monitoring requires Linux KFD')
+  dm_tg_flags, dm_prefix = 'DEV=KFD+AMD:LLVM FLOAT16=0', 'amd_'
 
 tg_devices = { # which device to put jit inputs to at runtime
   'openpilot.selfdrive.modeld.dmonitoringmodeld': {
@@ -72,13 +98,17 @@ frame_skip = ModelConstants.MODEL_RUN_FREQ // ModelConstants.MODEL_CONTEXT_FREQ
 
 if not os.getenv('SKIP_TINYGRAD_COMPILE'):
   for chestnut in [False, True] if CHESTNUT else [False]:
-    target_pkl_path = File(modeld_pkl_path(chestnut)).abspath
-    file_prefix, cmd_flags = ('big_', chestnut_tg_flags) if chestnut else ('', tg_flags)
+    # Road model goes to the build-owned artifact. Compiling into
+    # modeld_pkl_path() wrote straight into the default Settings slot, so any
+    # rebuild (compile_modeld.py edit, ONNX update) replaced a model the user had
+    # compiled and selected - the selection then looked like it was ignored.
+    target_pkl_path = File(modeld_pkl_path(chestnut) if chestnut else stock_modeld_pkl_path()).abspath
+    file_prefix, cmd_flags = ('big_', chestnut_tg_flags) if chestnut else ('', road_tg_flags)
     driving_onnx_deps = get_existing_chunks(File(f"models/{file_prefix}driving_supercombo.onnx").abspath)
-    camera_res_args = ' '.join(f'{cw}x{ch}' for cw, ch in camera_configs)
+    camera_res_args = ' '.join(f'{cw}x{ch}' for cw, ch in road_camera_configs)
     # CPU 7 is isolated with isolcpus on AGNOS, so explicitly pin the compiler to it.
     taskset = 'taskset -c 7 ' if arch == 'comma_arm64' else ''
-    cmd = (f'{cmd_flags} {mac_brew_string} {taskset}python3 {modeld_dir}/compile_modeld.py '
+    cmd = (f'{cmd_flags} {mac_brew_string} {taskset}{PYTHON} {modeld_dir}/compile_modeld.py '
           f'--model-size {model_w}x{model_h} '
           f'--camera-resolutions {camera_res_args} '
           f'--onnx {File(f"models/{file_prefix}driving_supercombo.onnx").abspath} '
@@ -103,7 +133,7 @@ if not os.getenv('SKIP_TINYGRAD_COMPILE'):
     actions = Action(do_compile, "  [CHESTNUT] $TARGET") if chestnut else [cmd, Action(do_chunk, "  [CHUNK] $TARGET")]
     node = lenv.Command(
       chunk_targets,
-      tinygrad_files + compile_modeld_script + driving_onnx_deps + [Value(camera_res_args), Value(chunk_targets), chunker_file],
+      tinygrad_files + compile_modeld_script + driving_onnx_deps + [Value(camera_res_args), Value(cmd_flags), Value(chunk_targets), chunker_file],
       actions,
     )
     if chestnut:
@@ -112,22 +142,22 @@ if not os.getenv('SKIP_TINYGRAD_COMPILE'):
 # get model metadata
 fn = File(f"models/dmonitoring_model").abspath
 script_files = [File(Dir("#openpilot/selfdrive/modeld").File("get_model_metadata.py").abspath)]
-cmd = f'{tg_flags} {mac_brew_string} python3 {Dir("#openpilot/selfdrive/modeld").abspath}/get_model_metadata.py {fn}.onnx'
+cmd = f'{tg_flags} {mac_brew_string} {PYTHON} {Dir("#openpilot/selfdrive/modeld").abspath}/get_model_metadata.py {fn}.onnx'
 lenv.Command(fn + "_metadata.pkl", [fn + ".onnx"] + tinygrad_files + script_files + [tg_devices_node], cmd)
 
 dm_w, dm_h = DM_INPUT_SIZE
 compile_dm_warp_script = [File(f"{modeld_dir}/compile_dm_warp.py")]
 for cam_w, cam_h in camera_configs:
-  dm_pkl_path = File(f"models/dm_warp_{cam_w}x{cam_h}_tinygrad.pkl").abspath
-  cmd = (f'{tg_flags} {mac_brew_string} python3 {modeld_dir}/compile_dm_warp.py '
+  dm_pkl_path = File(f"models/{dm_prefix}dm_warp_{cam_w}x{cam_h}_tinygrad.pkl").abspath
+  cmd = (f'{dm_tg_flags} {mac_brew_string} {PYTHON} {modeld_dir}/compile_dm_warp.py '
          f'--camera-resolution {cam_w}x{cam_h} --warp-to {dm_w}x{dm_h} '
          f'--output {dm_pkl_path}')
   lenv.Command(dm_pkl_path, tinygrad_files + compile_dm_warp_script + compile_modeld_script + [tg_devices_node], cmd)
 
-def tg_compile(flags, model_name):
+def tg_compile(flags, model_name, output_name=None):
   pythonpath_string = 'PYTHONPATH="${PYTHONPATH}:' + env.Dir("#tinygrad_repo").abspath + '"'
   fn = File(f"models/{model_name}").abspath
-  pkl = fn + "_tinygrad.pkl"
+  pkl = File(f"models/{output_name or model_name}_tinygrad.pkl").abspath
   onnx_path = fn + ".onnx"
   chunk_targets = get_chunk_targets(pkl, estimate_pickle_max_size(os.path.getsize(onnx_path)))
   def do_chunk(target, source, env):
@@ -135,8 +165,8 @@ def tg_compile(flags, model_name):
   return lenv.Command(
     chunk_targets,
     [onnx_path] + tinygrad_files + [Value(chunk_targets), chunker_file, tg_devices_node],
-    [f'{pythonpath_string} {flags} python3 {Dir("#tinygrad_repo").abspath}/examples/openpilot/compile3.py {fn}.onnx {pkl}',
+    [f'{pythonpath_string} {flags} {PYTHON} {Dir("#tinygrad_repo").abspath}/examples/openpilot/compile3.py {fn}.onnx {pkl}',
      Action(do_chunk, "  [CHUNK] $TARGET")],
   )
 
-tg_compile(tg_flags, 'dmonitoring_model')
+tg_compile(dm_tg_flags, 'dmonitoring_model', dm_prefix + 'dmonitoring_model')

@@ -4,6 +4,7 @@ import math
 from openpilot.cereal import messaging, log
 from openpilot.common.basedir import BASEDIR
 from openpilot.common.params import Params
+from openpilot.common.camera_config import driver_camera_available
 from openpilot.common.swaglog import cloudlog
 from openpilot.selfdrive.ui.onroad.cabin_camera_dialog import CabinCameraDialog
 from openpilot.selfdrive.ui.ui_state import ui_state
@@ -56,12 +57,20 @@ class DeviceLayout(Widget):
     self._power_off_btn = dual_button_item(lambda: tr("Reboot"), lambda: tr("Power Off"),
                                            left_callback=self._reboot_prompt, right_callback=self._power_off_prompt)
 
+    driver_camera_items = []
+    # The sunnypilot device page builds its own item list (DeviceLayoutSP) and puts the
+    # same preview next to Quiet Mode, so this row is the non-sunnypilot entry point
+    # only. Gating it here keeps exactly one Driver Camera Preview on either page.
+    if not gui_app.sunnypilot_ui() and driver_camera_available():
+      driver_camera_items.append(button_item(lambda: tr("Driver Camera"), lambda: tr("PREVIEW"),
+                                             lambda: tr(DESCRIPTIONS['driver_camera']),
+                                             callback=self._show_driver_camera, enabled=ui_state.is_offroad))
+
     items = [
       text_item(lambda: tr("Dongle ID"), self._params.get("DongleId") or (lambda: tr("N/A"))),
       text_item(lambda: tr("Serial"), self._params.get("HardwareSerial") or (lambda: tr("N/A"))),
       self._pair_device_btn,
-      button_item(lambda: tr("Driver Camera"), lambda: tr("PREVIEW"), lambda: tr(DESCRIPTIONS['driver_camera']),
-                  callback=lambda: gui_app.push_widget(CabinCameraDialog()), enabled=ui_state.is_offroad),
+      *driver_camera_items,
       self._reset_calib_btn,
       button_item(lambda: tr("Review Training Guide"), lambda: tr("REVIEW"), lambda: tr(DESCRIPTIONS['review_guide']),
                   self._on_review_training_guide, enabled=ui_state.is_offroad),
@@ -70,6 +79,12 @@ class DeviceLayout(Widget):
       self._power_off_btn,
     ]
     return items
+
+  def _show_driver_camera(self):
+    # Same predicate as the manager and camerad: a camera that was never opened has
+    # no frames to preview.
+    if driver_camera_available() and ui_state.is_offroad():
+      gui_app.push_widget(CabinCameraDialog())
 
   def _offroad_transition(self):
     self._power_off_btn.action_item.right_button.set_visible(ui_state.is_offroad())
@@ -128,6 +143,12 @@ class DeviceLayout(Widget):
                                                                                   abs(yaw), tr("left") if yaw > 0 else tr("right"))
       except Exception:
         cloudlog.exception("invalid CalibrationParams")
+    else:
+      # Nothing stored at all: either this device has never calibrated, or a reset
+      # just cleared it. Say so - otherwise a reset is invisible on this page, and
+      # the onroad "Calibrating: N%" alert is not there to report it either (it is
+      # published by selfdrived, which is absent offroad and in bench mode).
+      desc += tr("<br><br>Not calibrated yet: drive above 24 km/h in a straight line for about 5 seconds to start.")
 
     lag_perc = 0
     lag_bytes = self._params.get("LiveDelay")

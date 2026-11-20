@@ -77,12 +77,24 @@ def _bundle_artifacts(bundle: custom.ModelManagerSP.ModelBundle) -> list[tuple[s
 
 def _bundle_is_valid_locally(bundle: custom.ModelManagerSP.ModelBundle) -> bool:
   model_root = Paths.model_root()
+  artifacts = _bundle_artifacts(bundle)
+  # all([]) is True: a bundle whose catalogue entry has no sha256 was treated as
+  # "locally valid" and never re-downloaded, then modeld failed to find a pkl.
+  if not artifacts:
+    return False
   return all(_verify_file(os.path.join(model_root, file_name), expected_hash)
-             for file_name, expected_hash in _bundle_artifacts(bundle))
+             for file_name, expected_hash in artifacts)
 
 
 def _bundle_needs_reset(active_bundle: custom.ModelManagerSP.ModelBundle, available_bundles: list[custom.ModelManagerSP.ModelBundle] | None) -> bool:
   if active_bundle is None:
+    return False
+
+  # Locally compiled artifacts have no catalogue entry by design - their ref is
+  # self-describing ("local:..."). Matching them against the catalogue always
+  # fails, which used to make the validator delete the user's pick on the next
+  # tick and silently fall back to the default model.
+  if (active_bundle.ref or "").startswith("local:"):
     return False
 
   if available_bundles is not None:
@@ -105,6 +117,13 @@ def _bundle_needs_reset(active_bundle: custom.ModelManagerSP.ModelBundle, availa
     if set(_bundle_artifacts(active_bundle)) != set(_bundle_artifacts(matching_bundle)):
       return True
 
+  artifacts = _bundle_artifacts(active_bundle)
+  if not artifacts:
+    # An empty placeholder bundle (no artifact at all) is not evidence of a broken
+    # download. A bundle that DECLARES an artifact but has no sha256 is, and it must
+    # be reset so the next download can fetch a verifiable copy.
+    return any(getattr(getattr(model, "artifact", None), "fileName", None)
+               for model in getattr(active_bundle, "models", []))
   return not _bundle_is_valid_locally(active_bundle)
 
 

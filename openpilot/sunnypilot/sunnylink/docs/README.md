@@ -70,17 +70,6 @@ The vehicle page has the same shape but declares `kind: vehicle`; each section's
 macros:
   offroad: [{type: offroad_only}]
   longitudinal: [{type: capability, field: has_longitudinal_control, equals: true}]
-  mads_full_platforms:
-    - type: not
-      condition:
-        type: any
-        conditions:
-          - {type: capability, field: brand, equals: rivian}
-          - type: all
-            conditions:
-              - {type: capability, field: brand, equals: tesla}
-              - type: not
-                condition: {type: capability, field: tesla_has_vehicle_bus, equals: true}
 ```
 
 In an item:
@@ -88,7 +77,7 @@ In an item:
 ```yaml
 enablement:
   - {$ref: "#/macros/offroad"}
-  - {$ref: "#/macros/mads_full_platforms"}
+  - {$ref: "#/macros/longitudinal"}
 ```
 
 The compiler splices a list-context `$ref` into its parent list. Macros may reference other macros up to depth 3; cycles are an error.
@@ -156,7 +145,7 @@ The tables below describe the **compiled** `settings_ui.json` schema — what th
 
 **Enablement rules**: Grayed out (disabled) when rules fail. Frontend shows a contextual badge explaining why.
 
-**Capability fields** (referenced in rules): `has_longitudinal_control`, `has_icbm`, `icbm_available`, `torque_allowed`, `brand`, `pcm_cruise`, `alpha_long_available`, `steer_control_type`, `enable_bsm`, `is_release`, `is_sp_release`, `is_development`, `tesla_has_vehicle_bus`, `has_stop_and_go`, `stock_longitudinal`
+**Capability fields** are defined by `CAPABILITY_FIELDS` in `capabilities.py`. The v1 payload also emits four retired platform flags with a fixed value of `false` for compatibility with older dashboards.
 
 ---
 
@@ -386,13 +375,6 @@ enablement:
   - {type: param, key: NeuralNetworkLateralControl, equals: false}
 ```
 
-**Negation across multiple platforms** (everything except Rivian + Tesla-no-bus):
-```yaml
-enablement:
-  - {$ref: "#/macros/offroad"}
-  - {$ref: "#/macros/mads_full_platforms"}   # macro encapsulates the not(any(rivian, all(tesla, not(bus)))) logic
-```
-
 If the same multi-condition block appears in 2+ items, **promote it to a macro** in `_macros.yaml`. Re-run `python sunnypilot/sunnylink/tools/apply_macros.py` to substitute existing inlined matches automatically.
 
 ### Mutual exclusion
@@ -446,36 +428,26 @@ sections:
 
 ### Add vehicle-brand settings
 
-Edit `pages/vehicle.yaml`. Each section is a brand:
+`pages/vehicle.yaml` preserves the vehicle settings section of the dashboard protocol. This build ships with an empty list:
 ```yaml
 id: vehicle
 kind: vehicle
-sections:
-  - id: rivian
-    title: Rivian Settings
-    description: ''
-    items:
-      - key: RivianFeature
-        widget: toggle
-        title: Rivian One Pedal
-        enablement:
-          - {$ref: "#/macros/offroad"}
+sections: []
 ```
 
 `kind: vehicle` tells the compiler to emit this page as `vehicle_settings.<brand>` in the wire JSON.
 
 ### Add a feature with toggles, sub-panel, and macro
 
-Example: "Smart Wipers" with a master toggle, intensity selector, and sub-panel for advanced tuning, gated to torque-steering Hyundais on offroad.
+Example: "Smart Wipers" with a master toggle, intensity selector, and sub-panel for advanced tuning. The sample controls are writable offroad with advanced controls enabled.
 
 1. **Param keys** — register all 4 in `common/params_keys.h`.
 
-2. **Decide on a macro** — if "torque Hyundai" gating is reused, add to `_macros.yaml`:
+2. **Decide on a macro** — if these conditions are reused, add to `_macros.yaml`:
    ```yaml
-   torque_hyundai:
+   advanced_offroad:
      - {$ref: "#/macros/offroad"}
-     - {type: capability, field: brand, equals: hyundai}
-     - {type: capability, field: torque_allowed, equals: true}
+     - {$ref: "#/macros/advanced_only"}
    ```
 
 3. **Edit the relevant page** — `pages/visuals.yaml` (or wherever the feature lives). Add a new section + sub_panel:
@@ -483,13 +455,13 @@ Example: "Smart Wipers" with a master toggle, intensity selector, and sub-panel 
    sections:
      - id: smart_wipers
        title: Smart Wipers
-       description: Camera-driven wiper control (Hyundai/Kia, torque only)
+       description: Camera-driven wiper control
        items:
          - key: SmartWipersEnabled
            widget: toggle
            title: Enable Smart Wipers
            enablement:
-             - {$ref: "#/macros/torque_hyundai"}
+             - {$ref: "#/macros/advanced_offroad"}
          - key: SmartWipersIntensity
            widget: multiple_button
            title: Sensitivity
@@ -500,7 +472,7 @@ Example: "Smart Wipers" with a master toggle, intensity selector, and sub-panel 
            visibility:
              - {type: param, key: SmartWipersEnabled, equals: true}
            enablement:
-             - {$ref: "#/macros/torque_hyundai"}
+             - {$ref: "#/macros/advanced_offroad"}
        sub_panels:
          - id: smart_wipers_tuning
            label: Smart Wipers Tuning

@@ -1,18 +1,13 @@
 import signal
 import threading
 import functools
-import numpy as np
 
 from collections import namedtuple
 from enum import Enum
 from multiprocessing import Process, Queue, Value
 from abc import ABC, abstractmethod
-from opendbc.car.honda.values import CruiseButtons
-from openpilot.common.params import Params
 from openpilot.common.realtime import Ratekeeper
-from openpilot.selfdrive.test.helpers import set_params_enabled
 from openpilot.tools.sim.lib.common import SimulatorState, World
-from openpilot.tools.sim.lib.simulated_car import SimulatedCar
 from openpilot.tools.sim.lib.simulated_sensors import SimulatedSensors
 
 QueueMessage = namedtuple("QueueMessage", ["type", "info"], defaults=[None])
@@ -37,10 +32,6 @@ class SimulatorBridge(ABC):
   TICKS_PER_FRAME = 5
 
   def __init__(self, dual_camera, high_quality):
-    set_params_enabled()
-    self.params = Params()
-    self.params.put_bool("AlphaLongitudinalEnabled", True, block=True)
-
     self.rk = Ratekeeper(100, None)
 
     self.dual_camera = dual_camera
@@ -54,9 +45,6 @@ class SimulatorBridge(ABC):
     self.simulator_state = SimulatorState()
 
     self.world: World | None = None
-
-    self.past_startup_engaged = False
-    self.startup_button_prev = True
 
     self.test_run = False
 
@@ -100,14 +88,9 @@ Ignition: {self.simulator_state.ignition} Engaged: {self.simulator_state.is_enga
   def _run(self, q: Queue):
     self.world = self.spawn_world(q)
 
-    self.simulated_car = SimulatedCar()
     self.simulated_sensors = SimulatedSensors(self.dual_camera)
 
     self._exit_event = threading.Event()
-
-    self.simulated_car_thread = threading.Thread(target=rk_loop, args=(functools.partial(self.simulated_car.update, self.simulator_state),
-                                                                        100, self._exit_event))
-    self.simulated_car_thread.start()
 
     self.simulated_camera_thread = threading.Thread(target=rk_loop, args=(functools.partial(self.simulated_sensors.send_camera_images, self.world),
                                                                         20, self._exit_event))
@@ -118,9 +101,6 @@ Ignition: {self.simulator_state.ignition} Engaged: {self.simulator_state.is_enga
       self.world.tick()
 
     while self._keep_alive:
-      throttle_out = steer_out = brake_out = 0.0
-      throttle_op = steer_op = brake_op = 0.0
-
       self.simulator_state.cruise_button = 0
       self.simulator_state.left_blinker = False
       self.simulator_state.right_blinker = False
@@ -138,15 +118,6 @@ Ignition: {self.simulator_state.ignition} Engaged: {self.simulator_state.is_enga
             throttle_manual = float(m[1])
           elif m[0] == "brake":
             brake_manual = float(m[1])
-          elif m[0] == "cruise":
-            if m[1] == "down":
-              self.simulator_state.cruise_button = CruiseButtons.DECEL_SET
-            elif m[1] == "up":
-              self.simulator_state.cruise_button = CruiseButtons.RES_ACCEL
-            elif m[1] == "cancel":
-              self.simulator_state.cruise_button = CruiseButtons.CANCEL
-            elif m[1] == "main":
-              self.simulator_state.cruise_button = CruiseButtons.MAIN
           elif m[0] == "blinker":
             if m[1] == "left":
               self.simulator_state.left_blinker = True
@@ -168,24 +139,7 @@ Ignition: {self.simulator_state.ignition} Engaged: {self.simulator_state.is_enga
       # Update openpilot on current sensor state
       self.simulated_sensors.update(self.simulator_state, self.world)
 
-      self.simulated_car.sm.update(0)
-      self.simulator_state.is_engaged = self.simulated_car.sm['selfdriveState'].active
-
-      if self.simulator_state.is_engaged:
-        throttle_op = np.clip(self.simulated_car.sm['carControl'].actuators.accel / 1.6, 0.0, 1.0)
-        brake_op = np.clip(-self.simulated_car.sm['carControl'].actuators.accel / 4.0, 0.0, 1.0)
-        steer_op = self.simulated_car.sm['carControl'].actuators.steeringAngleDeg
-
-        self.past_startup_engaged = True
-      elif not self.past_startup_engaged and self.simulated_car.sm['selfdriveState'].engageable:
-        self.simulator_state.cruise_button = CruiseButtons.DECEL_SET if self.startup_button_prev else CruiseButtons.MAIN # force engagement on startup
-        self.startup_button_prev = not self.startup_button_prev
-
-      throttle_out = throttle_op if self.simulator_state.is_engaged else throttle_manual
-      brake_out = brake_op if self.simulator_state.is_engaged else brake_manual
-      steer_out = steer_op if self.simulator_state.is_engaged else steer_manual
-
-      self.world.apply_controls(steer_out, throttle_out, brake_out)
+      self.world.apply_controls(steer_manual, throttle_manual, brake_manual)
       self.world.read_state()
       self.world.read_sensors(self.simulator_state)
 

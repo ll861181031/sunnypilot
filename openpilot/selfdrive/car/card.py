@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
+import copy
 import os
 import time
 import threading
+from dataclasses import asdict
 
 import openpilot.cereal.messaging as messaging
 
@@ -23,7 +25,14 @@ from openpilot.selfdrive.car.cruise import VCruiseHelper
 from openpilot.selfdrive.car.helpers import convert_carControlSP, convert_to_capnp
 
 from openpilot.sunnypilot.mads.helpers import set_alternative_experience, set_car_specific_params
+from openpilot.sunnypilot.selfdrive.controls.lib.lead_bound_learn import (
+  LeadBoundLearning, mode_from_param, resume_keys, table_key, MODE_OFF)
 from openpilot.sunnypilot.selfdrive.car import interfaces as sunnypilot_interfaces
+
+# How long lateral must stay inactive before a tuning change is applied. Two seconds
+# is long enough for the last commanded angle to have left the bus and short enough
+# that a driver who lifts and re-engages does not wait.
+LATERAL_TUNE_SETTLE_S = 2.0
 
 REPLAY = "REPLAY" in os.environ
 
@@ -71,7 +80,8 @@ class Car:
 
   def __init__(self, CI=None, RI=None) -> None:
     self.can_sock = messaging.sub_sock('can', timeout=20)
-    self.sm = messaging.SubMaster(['pandaStates', 'carControl', 'onroadEvents'] + ['carControlSP', 'longitudinalPlanSP'])
+    self.sm = messaging.SubMaster(['pandaStates', 'carControl', 'onroadEvents'] + ['carControlSP', 'longitudinalPlanSP'] + ['laneLineTypes'],
+                                  ignore_alive=['laneLineTypes'], ignore_avg_freq=['laneLineTypes'], ignore_valid=['laneLineTypes'])
     self.pm = messaging.PubMaster(['sendcan', 'carState', 'carParams', 'carOutput', 'radarTracks'] + ['carParamsSP', 'carStateSP'])
 
     self.can_rcv_cum_timeout_counter = 0
@@ -83,34 +93,42 @@ class Car:
 
     self.last_actuators_output = structs.CarControl.Actuators()
 
+    # Structured diagnostics: one event on each lateral-fault edge, not per frame.
+    # The raw values are already in carStateSP.bydLateral/rlog; this event makes the
+    # onset and its context searchable in swaglog without spamming the control loop.
+    self._prev_lateral_fault = False
+    self._lateral_fault_start = None
+    self._last_panda_tx_blocked = None
+
+    # Lateral tuning hot-swap. A parameter sweep changes the two tracking tables
+    # between engagements, so one drive can cover several pairs instead of costing
+    # one drive per point. The switch is only applied after lateral has been off
+    # for LATERAL_TUNE_SETTLE_S: the driver picks the moment by letting go.
+    self._lat_inactive_since: float | None = None
+    self._lat_tune_segment = 0
+
     self.params = Params()
+
+    # Lead-bound learner state is opened by _init_lead_learn() *after* self.CP
+    # exists. It needs self.CP.brand, and self.CP is only assigned past the
+    # fingerprinting branch below - reading it here raised AttributeError on every
+    # start, which took card down before it could publish carState/CarParams and
+    # left the UI on "sunnypilot Unavailable / Waiting to start".
+    self._lead_learn = None
+    self._lead_learn_last_save = 0.0
+    self._lead_learn_dirty = False
 
     self.can_callbacks = can_comm_callbacks(self.can_sock, self.pm.sock['sendcan'])
 
-    is_release = False  # self.params.get_bool("IsReleaseBranch")
     is_release_sp = self.params.get_bool("IsReleaseSpBranch")
+    is_release = self.params.get_bool("IsReleaseBranch") or is_release_sp
 
     if CI is None:
-      # wait for one pandaState and one CAN packet
-      print("Waiting for CAN messages...")
-      while True:
-        can = messaging.recv_one_retry(self.can_sock)
-        if len(can.can) > 0:
-          break
-
       alpha_long_allowed = self.params.get_bool("AlphaLongitudinalEnabled")
 
-      cached_params = None
-      cached_params_raw = self.params.get("CarParamsCache")
-      if cached_params_raw is not None:
-        with car.CarParams.from_bytes(cached_params_raw) as _cached_params:
-          cached_params = _cached_params
-
       fixed_fingerprint = (self.params.get("CarPlatformBundle") or {}).get("platform", None)
-      init_params_list_sp = sunnypilot_interfaces.initialize_params(self.params)
-
-      self.CI = get_car(*self.can_callbacks, obd_callback(self.params), alpha_long_allowed, is_release, cached_params,
-                        fixed_fingerprint, init_params_list_sp, is_release_sp)
+      self.CI = get_car(*self.can_callbacks, obd_callback(self.params), alpha_long_allowed, is_release,
+                        fixed_fingerprint=fixed_fingerprint, is_release_sp=is_release_sp)
       sunnypilot_interfaces.setup_interfaces(self.CI, self.params)
       self.RI = interfaces[self.CI.CP.carFingerprint].RadarInterface(self.CI.CP, self.CI.CP_SP)
       self.CP = self.CI.CP
@@ -121,6 +139,13 @@ class Car:
     else:
       self.CI, self.CP, self.CP_SP = CI, CI.CP, CI.CP_SP
       self.RI = RI
+
+    # self.CP exists from here on. Opened here rather than in a daemon so the learner
+    # shares the control loop's clock; it only runs on the brand whose table it
+    # models. Shadow mode (the default) records what it would set under
+    # BydLeadBoundShadow and never touches the curve in force - see
+    # lead_bound_learn.py for why a replay cannot validate a raise.
+    self._init_lead_learn()
 
     self.CP.alternativeExperience = 0
     # mads
@@ -203,6 +228,15 @@ class Car:
     RD: structs.RadarDataT | None = self.RI.update(can_list)
 
     self.sm.update(0)
+    self._update_lane_line_types(CS_SP)
+
+    # Capability-based rather than brand-based: any CarState that opts into panda
+    # liveness tracking (currently BYD) derives its own lateral-control fault from
+    # the panda snapshot, so the generic loop needs no brand-specific branch.
+    if hasattr(self.CI.CS, "update_panda_state"):
+      panda_fresh = self.sm.all_checks(["pandaStates"])
+      self.CI.CS.update_panda_state(self.sm["pandaStates"], panda_fresh)
+      CS.steerFaultTemporary = bool(CS.steerFaultTemporary or self.CI.CS.lateral_control_fault)
 
     can_rcv_valid = len(can_strs) > 0
 
@@ -224,6 +258,232 @@ class Car:
     CS.vCruiseCluster = float(self.v_cruise_helper.v_cruise_cluster_kph)
 
     return CS, CS_SP, RD
+
+  def _init_lead_learn(self) -> None:
+    """Open the lead-bound learner for the brand whose curve it models.
+
+    Split out of __init__ and called only once self.CP exists: the brand gate reads
+    self.CP.brand, so the ordering is the whole point of the method - reading it
+    earlier raised AttributeError and killed card before it published carState.
+    """
+    if str(getattr(self.CP, "brand", "")) != "byd":
+      return
+    from opendbc.car.byd.values import CarControllerParams as _BydParams, parse_lead_bound_table
+    try:
+      mode = mode_from_param(self.params.get("BydLeadLearnMode", return_default=True))
+      # Resume from the curve this mode owns, then from the other one as a fallback
+      # for a mode switch. Reading only BydLeadBoundTable meant shadow mode - the
+      # default - restarted from the shipped curve on every boot and discarded the
+      # proposal the previous drive had already written to BydLeadBoundShadow.
+      own_key, fallback_key = resume_keys(mode)
+      stored = self.params.get(own_key, return_default=True) or ""
+      if not stored:
+        stored = self.params.get(fallback_key, return_default=True) or ""
+    except Exception:
+      # Params keys live in libparams_c, which is built from params_keys.h. A
+      # checkout whose library predates the keys must not take the car down over
+      # an optional learner: stay off and say why.
+      cloudlog.event("bydLeadLearn.unavailable", error=True,
+                     reason="params keys missing - rebuild openpilot/common/libparams_c.so")
+      return
+    if mode == MODE_OFF:
+      return
+    parsed = parse_lead_bound_table(stored) if stored else None
+    bp, values = parsed if parsed is not None else _BydParams.STEER_ANGLE_ERROR_MAX
+    self._lead_learn = LeadBoundLearning(bp, values, mode)
+
+  def _update_lane_line_types(self, CS_SP: custom.CarStateSP) -> None:
+    """Copy the optional laned result into CarStateSP.
+
+    A missing service means "unknown", not "dashed": -1 keeps a consumer from
+    acting on a line type that was never measured. laned is optional and its
+    service is absent whenever LaneLineDetectionEnabled is false.
+    """
+    seen = bool(getattr(self.sm, "seen", {}).get("laneLineTypes", False))
+    alive = bool(getattr(self.sm, "alive", {}).get("laneLineTypes", False))
+    valid_map = getattr(self.sm, "valid", {})
+    valid = seen and alive and bool(valid_map.get("laneLineTypes", False))
+    if valid:
+      payload = self.sm["laneLineTypes"]
+      CS_SP.leftLaneLine = int(payload.leftType)
+      CS_SP.rightLaneLine = int(payload.rightType)
+    else:
+      CS_SP.leftLaneLine = -1
+      CS_SP.rightLaneLine = -1
+    CS_SP.laneLineTypesValid = valid
+
+  def _log_lateral_fault(self, CS: car.CarState) -> None:
+    """Emit a structured event when the lateral fault changes state.
+
+    This is observability only: it does not influence control. The event carries
+    the controller's own diagnostic snapshot plus the EPS/CAN values that are not
+    otherwise preserved as a single record at the fault edge.
+    """
+    if not hasattr(CS, "steerFaultTemporary"):
+      return
+    # ``"pandaStates" in self.sm`` looks harmless and is not: SubMaster defines neither
+    # __contains__ nor __iter__, so Python falls back to the legacy integer protocol and
+    # calls sm[0], sm[1], ... - and self.data[0] raises KeyError: 0, which is not
+    # IndexError, so it escapes instead of ending the loop. That crash took card down on
+    # every start, which in turn left selfdrived with no carState and surfaced on screen
+    # as "Unknown Vehicle Variant". Use the bookkeeping SubMaster actually exposes.
+    try:
+      panda_states = self.sm["pandaStates"] if self.sm.seen.get("pandaStates", False) else []
+      panda = panda_states[0] if len(panda_states) else None
+    except (KeyError, IndexError, AttributeError, TypeError):
+      panda = None
+    panda_tx_blocked = int(panda.safetyTxBlocked) if panda is not None else None
+    tx_blocked_delta = (None if panda_tx_blocked is None or self._last_panda_tx_blocked is None
+                        else panda_tx_blocked - self._last_panda_tx_blocked)
+    self._last_panda_tx_blocked = panda_tx_blocked
+
+    fault = bool(CS.steerFaultTemporary or CS.steerFaultPermanent)
+
+    if fault and not self._prev_lateral_fault:
+      # This snapshot is only consumed on the fault edge; building it every 10 ms
+      # was a pure allocation/CPU cost on the card thread.
+      diag = getattr(self.CI.CS, "byd_lateral", None)
+      diag_dict = None
+      if diag is not None and getattr(diag, "valid", False):
+        try:
+          diag_dict = asdict(diag)
+        except (TypeError, ValueError):
+          diag_dict = None
+
+      panda_dict = None
+      if panda is not None:
+        panda_dict = {
+          "controlsAllowed": bool(panda.controlsAllowed),
+          "safetyTxBlocked": panda_tx_blocked,
+          "safetyRxInvalid": int(panda.safetyRxInvalid),
+          "safetyRxChecksInvalid": bool(panda.safetyRxChecksInvalid),
+          "faults": [str(f) for f in panda.faults],
+          "safetyModel": str(panda.safetyModel),
+          "safetyTxBlockedReason": int(getattr(panda, "safetyTxBlockedReason", 0)),
+          "lastTxBlockedAddr": int(getattr(panda, "lastTxBlockedAddr", 0)),
+          "lastTxBlockedBus": int(getattr(panda, "lastTxBlockedBus", 0)),
+          "lastTxBlockedLen": int(getattr(panda, "lastTxBlockedLen", 0)),
+          "lastTxBlockedData0": int(getattr(panda, "lastTxBlockedData0", 0)),
+          "lastTxBlockedData1": int(getattr(panda, "lastTxBlockedData1", 0)),
+        }
+      self._lateral_fault_start = time.monotonic()
+      cloudlog.event(
+        "bydLateralFault",
+        error=True,
+        epsTemporary=bool(CS.steerFaultTemporary),
+        epsPermanent=bool(CS.steerFaultPermanent),
+        lateralControlFault=str(getattr(self.CI.CS, "lateral_control_fault", "")),
+        speedMs=round(float(CS.vEgo), 3),
+        steeringAngleDeg=round(float(CS.steeringAngleDeg), 3),
+        steeringRateDeg=round(float(CS.steeringRateDeg), 3),
+        steeringTorque=round(float(CS.steeringTorque), 3),
+        steeringTorqueEps=round(float(CS.steeringTorqueEps), 3),
+        steeringPressed=bool(CS.steeringPressed),
+        canValid=bool(CS.canValid),
+        panda=panda_dict,
+        pandaTxBlockedDelta=tx_blocked_delta,
+        bydLateral=diag_dict,
+      )
+    elif not fault and self._prev_lateral_fault:
+      duration = (time.monotonic() - self._lateral_fault_start) if self._lateral_fault_start else None
+      cloudlog.event(
+        "bydLateralRecovered",
+        durationS=round(duration, 3) if duration is not None else None,
+        speedMs=round(float(CS.vEgo), 3),
+        steeringAngleDeg=round(float(CS.steeringAngleDeg), 3),
+        steeringRateDeg=round(float(CS.steeringRateDeg), 3),
+        pandaTxBlocked=panda_tx_blocked,
+      )
+      self._lateral_fault_start = None
+
+    self._prev_lateral_fault = fault
+
+  def _lead_learn_step(self, CS, CS_SP) -> None:
+    """Feed the learner one 100 Hz sample and persist its curve once a minute.
+
+    In shadow mode (`BydLeadLearnMode = 1`, the default) this writes
+    BydLeadBoundShadow and changes nothing about the car. In apply mode it writes
+    BydLeadBoundTable instead, and the ordinary tuning-refresh path picks it up
+    while lateral is inactive - the learner itself never touches CP_SP.
+    """
+    learn = self._lead_learn
+    if learn is None or not learn.enabled:
+      return
+
+    diag = CS_SP.bydLateral
+    valid = bool(diag.valid)
+    mask = int(diag.limitMask) if valid else 0
+    at_bound = bool(mask & 1) and not (mask & 8)   # Limit.LEAD and not INACTIVE
+    starved = valid and abs(diag.desiredAngleDeg - diag.measuredAngleDeg) > diag.leadBoundDeg + 0.5
+    if learn.step(CS.vEgo, at_bound, starved, bool(getattr(CS_SP, "epsTooFast", False))):
+      self._lead_learn_dirty = True
+
+    now = time.monotonic()
+    if not self._lead_learn_dirty or now - self._lead_learn_last_save < 60.0:
+      return
+    self._lead_learn_last_save = now
+    self._lead_learn_dirty = False
+    text = learn.table_text()
+    key = table_key(learn.mode)
+    self.params.put(key, text)
+    cloudlog.event("bydLeadLearn", **learn.summary(), key=key)
+
+  def _maybe_refresh_lateral_tuning(self) -> None:
+    """Re-read the settings-page tracking knobs and apply them between engagements.
+
+    These two numbers used to be resolved once at construction, so a parameter
+    sweep cost one drive per point. They are now re-read every 50 s -- the same
+    cadence carParamsSP is published at, so the log always shows the pair that was
+    in force -- and applied only while lateral has been inactive for
+    LATERAL_TUNE_SETTLE_S.
+
+    Deliberately narrow: only the lead bound and the angle/rate limits move. The
+    driver-interaction knobs stay fixed for the life of the controller.
+
+    The CarParamsSP Params entries are left untouched on purpose. Rewriting them
+    here would let a mid-drive switch leak into every other process that reads
+    CarParamsSP; the next stack start re-reads Params anyway.
+    """
+    lat_active = bool(self.sm['carControl'].latActive) if self.sm.all_checks(['carControl']) else True
+    now = time.monotonic()
+    if lat_active:
+      self._lat_inactive_since = None
+      return
+    if self._lat_inactive_since is None:
+      self._lat_inactive_since = now
+      return
+    if now - self._lat_inactive_since < LATERAL_TUNE_SETTLE_S:
+      return
+
+    try:
+      fresh = copy.deepcopy(self.CP_SP)
+      set_car_specific_params(copy.deepcopy(self.CP), fresh, self.params)
+    except Exception:
+      cloudlog.exception("lat_tune.refresh_failed")
+      return
+
+    fields = ("steerAngleLeadTenths", "steerRateTenths", "steerAngleMaxTenths")
+    changed = {f: int(getattr(fresh, f, 0) or 0) for f in fields
+               if int(getattr(fresh, f, 0) or 0) != int(getattr(self.CP_SP, f, 0) or 0)}
+    # The learned curve is text, so it compares separately; the value carried in
+    # `changed` is only for the log line.
+    if str(getattr(fresh, "leadBoundTable", "") or "") != str(getattr(self.CP_SP, "leadBoundTable", "") or ""):
+      changed["leadBoundTable"] = 1
+    if not changed:
+      return
+
+    self.CP_SP = fresh
+    self.CP_SP_capnp = convert_to_capnp(self.CP_SP)
+    applied = False
+    refresh = getattr(self.CI.CC, "refresh_tuning", None)
+    if refresh is not None:
+      try:
+        applied = bool(refresh(self.CP_SP))
+      except Exception:
+        cloudlog.exception("lat_tune.apply_failed")
+    if applied:
+      self._lat_tune_segment += 1
+      cloudlog.event("lat_tune.segment", segment=self._lat_tune_segment, **changed)
 
   def state_publish(self, CS: car.CarState, CS_SP: custom.CarStateSP, RD: structs.RadarDataT | None):
     """carState and carParams publish loop"""
@@ -257,6 +517,7 @@ class Car:
 
     # carParamsSP - logged every 50 seconds (> 1 per segment)
     if self.sm.frame % int(50. / DT_CTRL) == 0:
+      self._maybe_refresh_lateral_tuning()
       cp_sp_send = messaging.new_message('carParamsSP')
       cp_sp_send.valid = True
       cp_sp_send.carParamsSP = self.CP_SP_capnp
@@ -288,6 +549,8 @@ class Car:
   def step(self):
     CS, CS_SP, RD = self.state_update()
 
+    self._log_lateral_fault(CS)
+    self._lead_learn_step(CS, CS_SP)
     self.state_publish(CS, CS_SP, RD)
 
     initialized = (not any(e.name == EventName.selfdriveInitializing for e in self.sm['onroadEvents']) and

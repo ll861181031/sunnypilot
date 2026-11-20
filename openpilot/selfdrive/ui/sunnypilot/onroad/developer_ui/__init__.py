@@ -14,6 +14,7 @@ from openpilot.selfdrive.ui.sunnypilot.onroad.developer_ui.elements import (
   AEgoElement, LeadSpeedElement, FrictionCoefficientElement, LatAccelFactorElement,
   SteeringTorqueEpsElement, BearingDegElement, AltitudeElement, DesiredSteeringPIDElement
 )
+from openpilot.system.ui.lib.multilang import tr
 from openpilot.system.ui.lib.application import gui_app, FontWeight
 from openpilot.system.ui.lib.text_measure import measure_text_cached
 from openpilot.system.ui.widgets import Widget
@@ -107,9 +108,12 @@ class DeveloperUiRenderer(Widget):
     label_size = 28
     value_size = 60
     unit_size = 28
-    label_width = measure_text_cached(self._font_bold, element.label, label_size, 0).x
+    # Translated here, not in UiElement.measure(): this path draws the raw label and
+    # never reads label_text, so translating only in measure() left these in English.
+    label = tr(element.label)
+    label_width = measure_text_cached(self._font_bold, label, label_size, 0).x
     centered_label_x = x + (container_width - label_width) / 2
-    rl.draw_text_ex(self._font_bold, element.label, rl.Vector2(centered_label_x, y), label_size, 0, rl.WHITE)
+    rl.draw_text_ex(self._font_bold, label, rl.Vector2(centered_label_x, y), label_size, 0, rl.WHITE)
 
     y += 45
     value_width = measure_text_cached(self._font_bold, element.value, value_size, 0).x

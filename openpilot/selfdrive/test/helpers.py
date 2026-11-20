@@ -13,7 +13,7 @@ from openpilot.common.version import training_version, terms_version
 
 
 def set_params_enabled():
-  os.environ['FINGERPRINT'] = "TOYOTA_COROLLA_TSS2"
+  os.environ['FINGERPRINT'] = "BYD_SONG_PLUS_DMI_23_ALT"
   os.environ['LOGPRINT'] = "debug"
 
   params = Params()

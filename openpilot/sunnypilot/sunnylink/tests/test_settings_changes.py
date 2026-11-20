@@ -111,19 +111,11 @@ def schema():
 
 
 class TestMadsBrandGates(OpenpilotTestCase):
-  def test_mads_main_cruise_has_brand_gate(self, schema):
-    """MadsMainCruiseAllowed must gate on brand and tesla_has_vehicle_bus."""
-    item = _find_item(schema, "MadsMainCruiseAllowed")
-    assert item is not None
-    assert _references_capability_field(item.get("enablement"), "brand")
-    assert _references_capability_field(item.get("enablement"), "tesla_has_vehicle_bus")
-
-  def test_mads_unified_engagement_has_brand_gate(self, schema):
-    """MadsUnifiedEngagementMode must mirror MadsMainCruiseAllowed brand-gate."""
-    item = _find_item(schema, "MadsUnifiedEngagementMode")
-    assert item is not None
-    assert _references_capability_field(item.get("enablement"), "brand")
-    assert _references_capability_field(item.get("enablement"), "tesla_has_vehicle_bus")
+  def test_mads_settings_require_offroad(self, schema):
+    for key in ("MadsMainCruiseAllowed", "MadsUnifiedEngagementMode", "MadsSteeringMode"):
+      item = _find_item(schema, key)
+      assert item is not None
+      assert item["enablement"] == [{"type": "offroad_only"}]
 
 
 class TestTestManeuversSection(OpenpilotTestCase):
@@ -183,8 +175,10 @@ class TestTorqueOptionGeneration(OpenpilotTestCase):
 
 
 class TestReleaseBranchGates(OpenpilotTestCase):
+  # EnableGithubRunner used to be listed here. The switch was removed from the page
+  # (nothing in this repository starts or stops a GitHub runner), so there is no item
+  # left to gate; the Params key stays for sync compatibility only.
   @parameterized.expand([
-    "EnableGithubRunner",
     "QuickBootToggle",
   ], names=["key"])
   def test_sp_dev_items_gate_on_is_sp_release(self, schema, key):
@@ -210,8 +204,6 @@ class TestSpuriousOffroadGatesDropped(OpenpilotTestCase):
 class TestNotEngagedReplacement(OpenpilotTestCase):
   @parameterized.expand([
     "AlphaLongitudinalEnabled",
-    "ToyotaEnforceStockLongitudinal",
-    "ToyotaStopAndGoHack",
   ], names=["key"])
   def test_offroad_only_replaced_with_not_engaged(self, schema, key):
     """These items should use not_engaged, not offroad_only."""

@@ -140,8 +140,14 @@ class Sidebar(Widget, SidebarSP):
       self._connect_status.update(tr_noop("CONNECT"), tr_noop("ERROR"), Colors.DANGER)
 
   def _update_panda_status(self):
+    # Imported lazily: openpilot.selfdrive.pandad pulls in pandad_api_impl, which
+    # the UI has no business loading at startup just to read an env flag.
+    from openpilot.selfdrive.pandad import usb_readonly_enabled
+
     if ui_state.panda_type == log.PandaState.PandaType.unknown:
       self._panda_status.update(tr_noop("NO"), tr_noop("PANDA"), Colors.DANGER)
+    elif usb_readonly_enabled():
+      self._panda_status.update(tr_noop("PANDA"), tr_noop("READ ONLY"), Colors.WARNING)
     else:
       self._panda_status.update(tr_noop("VEHICLE"), tr_noop("ONLINE"), Colors.GOOD)
 

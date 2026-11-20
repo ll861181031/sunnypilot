@@ -14,6 +14,7 @@ from openpilot.common.constants import CV
 from openpilot.common.params import Params
 from openpilot.common.swaglog import cloudlog
 from openpilot.selfdrive.ui.lib.api_helpers import get_token
+from openpilot.selfdrive.ui.lib.local_drive_stats import local_drive_stats_cached
 from openpilot.selfdrive.ui.ui_state import ui_state, device
 from openpilot.system.athena.registration import UNREGISTERED_DONGLE_ID
 from openpilot.system.ui.lib.application import gui_app, FontWeight, FONT_SCALE
@@ -58,10 +59,25 @@ class TripsLayout(Widget):
       cloudlog.exception(f"Failed to decode drive stats: {stats}")
       return {}
 
+  def _use_local_stats(self):
+    """Fall back to stats computed from the local recordings.
+
+    The cloud stats need a paired device, so an unregistered or offline device
+    (desktop rig, no connect account) would show an empty page forever. The
+    scan is cached in a param and only repeated when a newer recording exists.
+    """
+    try:
+      stats = local_drive_stats_cached(self._params)
+      if stats:
+        self._stats = stats
+    except Exception as e:
+      cloudlog.error(f"Failed to compute local drive stats: {e}")
+
   def _fetch_drive_stats(self):
     try:
       dongle_id = self._params.get("DongleId")
       if not dongle_id or dongle_id == UNREGISTERED_DONGLE_ID:
+        self._use_local_stats()
         return
       identity_token = get_token(dongle_id)
       response = api_get(f"v1.1/devices/{dongle_id}/stats", access_token=identity_token, session=self._session)
@@ -69,8 +85,12 @@ class TripsLayout(Widget):
         data = response.json()
         self._stats = data
         self._params.put(self.PARAM_KEY, data)
+      else:
+        # Offline or rejected: keep showing something useful.
+        self._use_local_stats()
     except Exception as e:
       cloudlog.error(f"Failed to fetch drive stats: {e}")
+      self._use_local_stats()
 
   def _update_loop(self):
     while self._running:
@@ -102,7 +122,7 @@ class TripsLayout(Widget):
 
     routes = int(data.get("routes", 0))
     distance = data.get("distance", 0)
-    distance_str = str(int(distance * CV.MPH_TO_KPH)) if is_metric else str(int(distance))
+    distance_str = str(round(distance * CV.MPH_TO_KPH)) if is_metric else str(int(distance))
     hours = int(data.get("minutes", 0) / 60)
 
     dist_unit = tr("KM") if is_metric else tr("Miles")

@@ -4,9 +4,7 @@ import bootstrap_icons
 import imgui
 import libusb
 from opendbc import get_generated_dbcs
-from opendbc.car import Bus
-from opendbc.car.fingerprints import MIGRATION
-from opendbc.car.values import PLATFORMS
+from openpilot.tools.cabana.dbc.generate_dbc_json import generate_dbc_dict
 from openpilot.common.basedir import BASEDIR
 
 Import('env', 'arch', 'common', 'messaging', 'visionipc', 'cereal', 'replay_lib', 'ffmpeg_libs')
@@ -38,21 +36,7 @@ def materialize_generated_dbcs(target, source, env):
   return None
 
 def write_car_fingerprint_to_dbc_header(target, source, env):
-  pairs = {}
-
-  for name, platform in sorted(PLATFORMS.items()):
-    dbc = platform.config.dbc_dict.get(Bus.pt, "")
-    if not dbc and name.startswith("TESLA_"):
-      dbc = platform.config.dbc_dict.get(Bus.party, "")
-    if not dbc and name == "COMMA_BODY":
-      dbc = "comma_body"
-    if dbc and name != "MOCK":
-      pairs[name] = dbc
-
-  for fingerprint, car in sorted(MIGRATION.items()):
-    dbc = pairs.get(str(car), "")
-    if dbc:
-      pairs[fingerprint] = dbc
+  pairs = generate_dbc_dict()
 
   lines = [
     "#pragma once",
@@ -89,8 +73,8 @@ def generate_event_extractors(target, source, env):
   ])
   return None
 
-generated_dbc_stamp = jot_env.Command(f"generated_dbcs/.stamp", [], materialize_generated_dbcs)
-car_fingerprint_to_dbc = jot_env.Command("car_fingerprint_to_dbc.h", [], write_car_fingerprint_to_dbc_header)
+generated_dbc_stamp = jot_env.Command("generated_dbcs/.stamp", [jot_env.Value(tuple(sorted(get_generated_dbcs().items())))], materialize_generated_dbcs)
+car_fingerprint_to_dbc = jot_env.Command("car_fingerprint_to_dbc.h", [jot_env.Value(tuple(sorted(generate_dbc_dict().items())))], write_car_fingerprint_to_dbc_header)
 event_extractors = jot_env.Command("generated_event_extractors.h", [
     "generate_event_extractors.py",
     jot_env.Glob("#openpilot/cereal/*.capnp"),

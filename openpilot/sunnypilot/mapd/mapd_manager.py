@@ -18,7 +18,7 @@ from openpilot.common.swaglog import cloudlog
 from openpilot.selfdrive.selfdrived.alertmanager import set_offroad_alert
 from openpilot.sunnypilot.mapd.live_map_data.osm_map_data import OsmMapData
 from openpilot.common.hardware.hw import Paths
-from openpilot.sunnypilot.mapd import MAPD_PATH
+from openpilot.sunnypilot.mapd.runtime import mapd_path
 from openpilot.sunnypilot.mapd.mapd_installer import VERSION, update_installed_version
 
 # PFEIFER - MAPD {{
@@ -38,8 +38,8 @@ def get_files_for_cleanup() -> list[str]:
       files = glob.glob(path + '/**', recursive=True)
       files_to_remove.extend(files)
   # check for version and mapd files
-  if not os.path.isfile(MAPD_PATH):
-    files_to_remove.append(MAPD_PATH)
+  if not mapd_path().is_file():
+    files_to_remove.append(str(mapd_path()))
   return files_to_remove
 
 
@@ -99,15 +99,15 @@ def filter_nations_and_states(nations: list[str], states: list[str] | None = Non
   tuple: Two lists. The first list is filtered nations and the second list is filtered states.
   """
 
-  if "US" in nations and states and not any(x.lower() == "all" for x in states):
-    # If a specific state in the US is provided, remove 'US' from nations
-    nations.remove("US")
-  elif "US" in nations and states and any(x.lower() == "all" for x in states):
-    # If 'All' is provided as a state (case invariant), remove those instances from states
-    states = [x for x in states if x.lower() != "all"]
-  elif "US" not in nations and states and any(x.lower() == "all" for x in states):
-    states.remove("All")
-  return nations, states or []
+  # Normalise the "all" marker once, case-insensitively. The old code checked
+  # case-insensitively but removed the literal "All", which raised ValueError for
+  # a caller that passed "all". It also mutated the caller's lists in place.
+  filtered_states = [x for x in (states or []) if str(x).lower() != "all"]
+  filtered_nations = list(nations or [])
+  if "US" in filtered_nations and filtered_states:
+    # A specific US state was requested: the country-level entry is redundant.
+    filtered_nations = [x for x in filtered_nations if x != "US"]
+  return filtered_nations, filtered_states
 
 
 def update_osm_db() -> None:
@@ -134,7 +134,7 @@ def main_thread():
 
   # Create folder needed for OSM
   try:
-    os.mkdir(Paths.mapd_root())
+    os.makedirs(Paths.mapd_root(), exist_ok=True)
   except FileExistsError:
     pass
   except PermissionError:

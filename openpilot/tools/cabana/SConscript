@@ -7,6 +7,13 @@ import libusb
 
 Import('env', 'arch', 'common', 'messaging', 'visionipc', 'cereal', 'replay_lib', 'ffmpeg_libs')
 
+import sys
+
+# Build-time helper scripts run on the interpreter that is running scons (the repo
+# venv), not whatever `python3` resolves to on PATH. The system interpreter lacks
+# zstandard/setproctitle, so the hardcoded name failed those targets.
+PYTHON = sys.executable
+
 # Detect Qt - skip build if not available
 if arch == "Darwin":
   try:
@@ -129,5 +136,5 @@ if GetOption('extras'):
 output_json_file = 'openpilot/tools/cabana/dbc/car_fingerprint_to_dbc.json'
 generate_dbc = cabana_env.Command('#' + output_json_file,
                                   ['dbc/generate_dbc_json.py'],
-                                  "python3 openpilot/tools/cabana/dbc/generate_dbc_json.py --out " + output_json_file)
+                                  PYTHON + " openpilot/tools/cabana/dbc/generate_dbc_json.py --out " + output_json_file)
 cabana_env.Depends(generate_dbc, ["#openpilot/common", '#opendbc_repo', "#openpilot/cereal", "#msgq_repo"])

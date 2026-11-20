@@ -45,7 +45,8 @@ def register(show_spinner=False) -> str | None:
 
   if not public_key:
     dongle_id = UNREGISTERED_DONGLE_ID
-    cloudlog.warning("missing public key")
+    if not PC:
+      cloudlog.warning("missing public key")
   elif dongle_id is None:
     if show_spinner:
       spinner = Spinner()

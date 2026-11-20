@@ -24,6 +24,7 @@ class DesireHelper:
     self.lane_change_direction = LaneChangeDirection.none
     self.lane_change_timer = 0.0
     self.prev_one_blinker = False
+    self.solid_line = False
     self.desire = log.Desire.none
     self.alc = AutoLaneChangeController(self)
     self.lane_turn_controller = LaneTurnController(self)
@@ -33,12 +34,51 @@ class DesireHelper:
   def get_lane_change_direction(CS):
     return LaneChangeDirection.left if CS.leftBlinker else LaneChangeDirection.right
 
-  def update(self, carstate, lateral_active, lane_change_prob, left_edge_detected=False, right_edge_detected=False):
+  @staticmethod
+  def lane_line_gate(line_type: int, lane_line_check: int) -> tuple[bool, bool]:
+    """Return ``(entry_allowed, requires_torque)`` for the target boundary.
+
+    ``lane_line_check`` mirrors CarrotPilot's LaneLineCheck parameter:
+      0: disabled, current behavior
+      1: a **measured** solid boundary blocks the sequence; an unmeasured one
+         (``-1``) does not
+      2: solid/unknown may start, but only with a driver torque override
+
+    ``line_type`` is -1 unknown, 0 dashed, 1 solid. 5 is CarrotPilot's "DLM inner
+    dashed" code and is treated as dashed for cars that provide it.
+
+    Mode 1 used to fail closed on unknown as well. That was wrong in practice: the
+    classifier reports unknown for whole stretches (39 of 40 frames sampled from one
+    recorded drive, where the marking was simply not resolvable), so failing closed
+    did not prevent crossing a solid line - it silently disabled every lane change
+    on those roads, with no alert telling the driver why. Unknown now means "no
+    information" and falls back to the previous behavior (model geometry + driver
+    intent); mode 2 stays available for drivers who want the strict version.
+    """
+    if lane_line_check <= 0 or line_type in (0, 5):
+      return True, False
+    if lane_line_check == 1:
+      # Only a measured, non-dashed boundary blocks.
+      return (True, False) if line_type < 0 else (False, True)
+    return True, True
+
+  def update(self, carstate, lateral_active, lane_change_prob, left_edge_detected=False, right_edge_detected=False,
+             blinker_latched=False, left_lane_line=-1, right_lane_line=-1, lane_line_check=0,
+             blindspot_unavailable_left=False, blindspot_unavailable_right=False,
+             navi_turn_direction=None):
     self.alc.update_params()
     self.lane_turn_controller.update_params()
     v_ego = carstate.vEgo
     one_blinker = carstate.leftBlinker != carstate.rightBlinker
     below_lane_change_speed = v_ego < LANE_CHANGE_SPEED_MIN
+
+    # A latched turn signal means the driver is about to turn, not to change lanes.
+    # Only cars whose stalk reports the difference set this (currently BYD, where the
+    # light tap and the press are separate values of TURN_SIGNAL_SWITCH); everyone
+    # else leaves it false and behaves exactly as before. It gates entry only - once
+    # a tap has started the sequence, switching to a held signal does not cancel it,
+    # because holding the signal through a lane change is normal.
+    blinker_requests_lane_change = not blinker_latched
 
     # Lane turn controller update
     self.lane_turn_controller.update_lane_turn(blindspot_left=carstate.leftBlindspot, blindspot_right=carstate.rightBlindspot,
@@ -49,12 +89,26 @@ class DesireHelper:
       self.lane_change_state = LaneChangeState.off
       self.lane_change_direction = LaneChangeDirection.none
       self.lane_change_timer = 0.0
+      self.solid_line = False
     else:
-      if self.lane_change_state == LaneChangeState.off and one_blinker and not self.prev_one_blinker and not below_lane_change_speed:
-        self.lane_change_state = LaneChangeState.preLaneChange
-        self.lane_change_timer = 0.0
-        # Initialize lane change direction to prevent UI alert flicker
-        self.lane_change_direction = self.get_lane_change_direction(carstate)
+      if self.lane_change_state == LaneChangeState.off and one_blinker and blinker_requests_lane_change \
+         and not self.prev_one_blinker and not below_lane_change_speed:
+        direction = self.get_lane_change_direction(carstate)
+        target_line = left_lane_line if direction == LaneChangeDirection.left else right_lane_line
+        entry_allowed, requires_torque = self.lane_line_gate(target_line, lane_line_check)
+        # "Unknown is not clear": a blind-spot monitor that is expected but cannot be
+        # read blocks starting the sequence, exactly as a detected car would. It only
+        # gates entry - a sequence already in preLaneChange is not cancelled, and a
+        # manual lane change (driver torque) is untouched. Cars without BSM leave both
+        # flags false, so their behavior is unchanged.
+        blindspot_unknown = (blindspot_unavailable_left if direction == LaneChangeDirection.left
+                             else blindspot_unavailable_right)
+        if entry_allowed and not blindspot_unknown:
+          self.lane_change_state = LaneChangeState.preLaneChange
+          self.lane_change_timer = 0.0
+          # Initialize lane change direction to prevent UI alert flicker
+          self.lane_change_direction = direction
+          self.solid_line = requires_torque
 
       elif self.lane_change_state == LaneChangeState.preLaneChange:
         # Update lane change direction
@@ -73,7 +127,8 @@ class DesireHelper:
           self.lane_change_state = LaneChangeState.off
           self.lane_change_direction = LaneChangeDirection.none
           self.lane_change_timer = 0.0
-        elif (torque_applied or self.alc.auto_lane_change_allowed) and not blindspot_detected:
+          self.solid_line = False
+        elif (torque_applied or (self.alc.auto_lane_change_allowed and not self.solid_line)) and not blindspot_detected:
           self.lane_change_state = LaneChangeState.laneChangeStarting
           self.lane_change_timer = 0.0
 
@@ -88,10 +143,15 @@ class DesireHelper:
           else:
             self.lane_change_state = LaneChangeState.off
             self.lane_change_direction = LaneChangeDirection.none
+            self.solid_line = False
 
     self.prev_one_blinker = one_blinker and lateral_active
 
-    if self.lane_turn_direction != TurnDirection.none:
+    if navi_turn_direction is not None and navi_turn_direction != TurnDirection.none:
+      # CPlink navigation turn, gated in modeld (file flag + distance + speed).  It is
+      # deliberately below the driver's blinker: a manual signal still wins.
+      self.desire = TURN_DESIRES[navi_turn_direction]
+    elif self.lane_turn_direction != TurnDirection.none:
       self.desire = TURN_DESIRES[self.lane_turn_direction]
     else:
       self.desire = log.Desire.none

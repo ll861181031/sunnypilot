@@ -6,10 +6,15 @@ See the LICENSE.md file in the root directory for more details.
 """
 import numpy as np
 
-from openpilot.common.transformations.camera import DEVICE_CAMERAS
+from openpilot.common.transformations.camera import device_camera_config
 
 
 class CameraOffsetHelper:
+  # The settings page can only produce +-0.35 m, but Params is writable from anywhere
+  # and the shear scales with the offset, so an unchecked value would skew every
+  # projection the model sees. Clamping here guards both modeld paths with one bound.
+  MAX_OFFSET_M = 0.35
+
   def __init__(self):
     self.camera_offset = 0.0
     self.actual_camera_offset = 0.0
@@ -32,11 +37,11 @@ class CameraOffsetHelper:
     return model_transform
 
   def set_offset(self, offset):
-    self.camera_offset = offset
+    self.camera_offset = max(-self.MAX_OFFSET_M, min(self.MAX_OFFSET_M, float(offset)))
 
   def update(self, model_transform_main, model_transform_extra, sm, main_wide_camera):
     self.actual_camera_offset = (0.9 * self.actual_camera_offset) + (0.1 * self.camera_offset)
-    dc = DEVICE_CAMERAS[(str(sm['deviceState'].deviceType), str(sm['narrowRoadCameraState'].sensor))]
+    dc = device_camera_config(sm['deviceState'].deviceType, sm['narrowRoadCameraState'].sensor)
     height = sm["extrinsicsCalibration"].height[0] if sm['extrinsicsCalibration'].height else 1.22
     rpy_calib = sm['extrinsicsCalibration'].rpyCalib
 
@@ -48,3 +53,18 @@ class CameraOffsetHelper:
     v_horizon_extra = self.get_v_horizon(intrinsics_extra, rpy_calib)
     model_transform_extra = self.apply_camera_offset(model_transform_extra, height, self.actual_camera_offset, v_horizon_extra)
     return model_transform_main, model_transform_extra
+
+  def update_transforms(self, transforms, rpy_calib, height):
+    """Apply the current offset to (model_transform, intrinsics) pairs.
+
+    Kept separate from update() because the two modeld paths do not agree on which
+    intrinsics the extra transform was built from: the tinygrad path always uses the
+    wide ones, while the stock path falls back to the narrow intrinsics when no wide
+    stream exists. Only the caller knows which intrinsics it used, so it supplies them.
+    """
+    self.actual_camera_offset = (0.9 * self.actual_camera_offset) + (0.1 * self.camera_offset)
+    out = []
+    for model_transform, intrinsics in transforms:
+      v_horizon = self.get_v_horizon(intrinsics, rpy_calib)
+      out.append(self.apply_camera_offset(model_transform, height, self.actual_camera_offset, v_horizon))
+    return out

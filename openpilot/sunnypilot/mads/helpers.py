@@ -8,11 +8,38 @@ See the LICENSE.md file in the root directory for more details.
 from openpilot.common.params import Params
 from opendbc.car import structs
 from opendbc.safety import ALTERNATIVE_EXPERIENCE
-from opendbc.sunnypilot.car.hyundai.values import HyundaiFlagsSP, HyundaiSafetyFlagsSP
-from opendbc.sunnypilot.car.tesla.values import MadsScreenButtonType, TeslaFlagsSP
+# BYD Song Plus DM-i 23 ALT port: settings-page param -> CarParamsSP field.
+#
+# opendbc is not allowed to import openpilot, so every value the settings page
+# owns has to travel across in CarParamsSP. Keeping the mapping in one table
+# means adding a knob is a one-line change here plus a field on both sides,
+# instead of another hand-written assignment that can silently go stale.
+BYD_SETTINGS_PARAMS = (
+  ("steerAngleLeadTenths", "BydSteerLeadMaxDeg"),
+  ("steerRateTenths", "BydSteerRateMax"),
+  ("steerAngleMaxTenths", "BydSteerAngleMaxTenths"),
+  ("overrideTorqueRelease", "BydOverrideTorqueRelease"),
+  ("releaseStableFrames", "BydReleaseStableFrames"),
+  ("rearmAngleErrorTenths", "BydRearmAngleErrorTenths"),
+  ("epsRearmHoldMs", "BydEpsRearmHoldMs"),
+  ("epsRearmTimeoutMs", "BydEpsRearmTimeoutMs"),
+  ("driverTorqueBase", "BydDriverTorqueBase"),
+  ("driverTorqueEpsMargin", "BydDriverTorqueEpsMargin"),
+  ("driverTorqueFactorHundredths", "BydDriverTorqueFactorHundredths"),
+  ("driverTorqueSamples", "BydDriverTorqueSamples"),
+  ("pandaTxRejectLimit", "BydPandaTxRejectLimit"),
+  ("pandaTxRejectDecay", "BydPandaTxRejectDecay"),
+  ("pandaUnavailableLimit", "BydPandaUnavailableLimit"),
+  ("pandaFaultClearCycles", "BydPandaFaultClearCycles"),
+  ("blinkerHoldCycles", "BydBlinkerHoldCycles"),
+  ("bydHmaRequest", "BydHmaRequest"),
+)
 
-
-MADS_NO_ACC_MAIN_BUTTON = ("rivian", "tesla")
+# Same contract, one field: the learned lead-bound curve is TEXT (a breakpoint per
+# speed band at 0.01 deg), so it cannot ride in the int table above.
+BYD_SETTINGS_TEXT_PARAMS = (
+  ("leadBoundTable", "BydLeadBoundTable"),
+)
 
 
 class MadsSteeringModeOnBrake:
@@ -21,22 +48,7 @@ class MadsSteeringModeOnBrake:
   DISENGAGE = 2
 
 
-def get_mads_limited_brands(CP: structs.CarParams, CP_SP: structs.CarParamsSP, params: Params) -> bool:
-  if CP.brand == 'rivian':
-    return True
-  if CP.brand == 'tesla':
-    if not CP_SP.flags & TeslaFlagsSP.HAS_VEHICLE_BUS:
-      return True
-    screen_button = int(params.get("TeslaMadsScreenButton", return_default=True))
-    return screen_button == MadsScreenButtonType.OFF
-
-  return False
-
-
 def read_steering_mode_param(CP: structs.CarParams, CP_SP: structs.CarParamsSP, params: Params):
-  if get_mads_limited_brands(CP, CP_SP, params):
-    return MadsSteeringModeOnBrake.DISENGAGE
-
   return params.get("MadsSteeringMode", return_default=True)
 
 
@@ -54,23 +66,24 @@ def set_alternative_experience(CP: structs.CarParams, CP_SP: structs.CarParamsSP
 
 
 def set_car_specific_params(CP: structs.CarParams, CP_SP: structs.CarParamsSP, params: Params):
-  if CP.brand == "hyundai":
-    # TODO-SP: This should be separated from MADS module for future implementations
-    #          Use "HyundaiLongitudinalMainCruiseToggleable" param
-    hyundai_cruise_main_toggleable = True
-    if hyundai_cruise_main_toggleable:
-      CP_SP.flags |= HyundaiFlagsSP.LONGITUDINAL_MAIN_CRUISE_TOGGLEABLE.value
-      CP_SP.safetyParam |= HyundaiSafetyFlagsSP.LONG_MAIN_CRUISE_TOGGLEABLE
+  # BYD Song Plus DM-i 23 ALT port: carry the settings page values that tune the
+  # lateral envelope into opendbc, which is not allowed to read Params itself.
+  # 0 means "unset", so the platform defaults in opendbc/car/byd/values.py apply
+  # unchanged and the porting tests keep describing the shipped behaviour.
+  if CP.brand == "byd":
+    for field_name, param_name in BYD_SETTINGS_PARAMS:
+      setattr(CP_SP, field_name, int(params.get(param_name, return_default=True) or 0))
 
-  # MADS Partial Support
-  # MADS is currently partially supported for these platforms due to lack of consistent states to engage controls
-  # Only MadsSteeringModeOnBrake.DISENGAGE is supported for these platforms
-  # TODO-SP: To enable MADS full support for Rivian and most Tesla, identify consistent signals for MADS toggling
-  mads_partial_support = get_mads_limited_brands(CP, CP_SP, params)
-  if mads_partial_support:
-    params.put("MadsSteeringMode", 2, block=True)
-    params.put_bool("MadsUnifiedEngagementMode", True, block=True)
+    for field_name, param_name in BYD_SETTINGS_TEXT_PARAMS:
+      raw = params.get(param_name, return_default=True)
+      setattr(CP_SP, field_name, raw.decode("utf-8", "replace") if isinstance(raw, bytes) else (raw or ""))
 
-  # no ACC MAIN button for these brands
-  if CP.brand in MADS_NO_ACC_MAIN_BUTTON:
-    params.remove("MadsMainCruiseAllowed")
+    # These two are seed values for the vehicle model rather than envelope knobs,
+    # so they belong on CarParams itself. paramsd overwrites them online once it
+    # has learnt the car, which is why the page labels them as seed-only.
+    steer_ratio = int(params.get("BydCarSpecsSteerRatioTenths", return_default=True) or 0)
+    stiffness = int(params.get("BydCarSpecsStiffnessHundredths", return_default=True) or 0)
+    if steer_ratio > 0:
+      CP.steerRatio = steer_ratio / 10.0
+    if stiffness > 0:
+      CP.tireStiffnessFactor = stiffness / 100.0

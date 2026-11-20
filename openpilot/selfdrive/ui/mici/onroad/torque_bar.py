@@ -184,12 +184,24 @@ class TorqueBar(Widget):
 
       if not car_control.latActive:
         self._torque_filter.update(0.0)
-      else:
+      elif max_lateral_acceleration > 0:
         self._torque_filter.update(np.clip((lateral_acceleration + accel_diff) / max_lateral_acceleration, -1, 1))
+      else:
+        # maxLateralAccel missing or zero: dividing by it produces NaN, the filter is
+        # permanently poisoned and the very next frame dies in int(NaN) below.
+        self._torque_filter.update(0.0)
     else:
       self._torque_filter.update(-ui_state.sm['carOutput'].actuatorsOutput.torque)
 
   def _render(self, rect: rl.Rectangle) -> None:
+    # A single NaN from any upstream source poisons a first-order filter forever, and
+    # int(NaN) below then kills the whole UI - which is exactly what happens the moment
+    # lateral control activates. Draw "no torque" for this frame and recover instead.
+    if not np.isfinite(self._torque_filter.x):
+      self._torque_filter.x = 0.0
+    if not np.isfinite(self._torque_line_alpha_filter.x):
+      self._torque_line_alpha_filter.x = 0.0
+
     # adjust y pos with torque
     torque_line_offset = np.interp(abs(self._torque_filter.x), [0.5, 1], [22 * self._scale, 26 * self._scale])
     torque_line_height = np.interp(abs(self._torque_filter.x), [0.5, 1], [14 * self._scale, 56 * self._scale])

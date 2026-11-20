@@ -3,6 +3,8 @@ import pyray as rl
 from dataclasses import dataclass
 from openpilot.cereal import messaging, log
 from openpilot.selfdrive.ui.ui_state import ui_state
+from openpilot.selfdrive.ui.onroad.alert_text import camera_alert_text
+from openpilot.selfdrive.ui.onroad.alert_text import localize_alert_text
 from openpilot.common.hardware import COMMA_HARDWARE
 from openpilot.system.ui.lib.application import gui_app, FontWeight, TextAlignment, TextAlignmentVertical
 from openpilot.system.ui.lib.multilang import tr
@@ -112,7 +114,11 @@ class AlertRenderer(Widget):
       return None
 
     # Return current alert
-    return Alert(text1=ss.alertText1, text2=ss.alertText2, size=ss.alertSize.raw, status=ss.alertStatus.raw)
+    text1, text2 = camera_alert_text(ss.alertType, ss.alertText1, ss.alertText2)
+    # selfdrived sends English literals; translate here so the catalog stays the
+    # single source of truth and no server-side behaviour depends on the UI.
+    return Alert(text1=localize_alert_text(tr(text1)), text2=localize_alert_text(tr(text2)),
+                 size=ss.alertSize.raw, status=ss.alertStatus.raw)
 
   def _render(self, rect: rl.Rectangle):
     alert = self.get_alert(ui_state.sm)

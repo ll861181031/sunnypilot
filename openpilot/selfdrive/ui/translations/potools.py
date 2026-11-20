@@ -194,6 +194,17 @@ def extract_strings(files: list[str], basedir: str) -> list[POEntry]:
   """Extract tr/trn/tr_noop calls from Python source files."""
   seen: dict[str, POEntry] = {}
 
+  def literal_string(node: ast.AST) -> str | None:
+    """Evaluate string literals, including adjacent ``+`` expressions."""
+    if isinstance(node, ast.Constant) and isinstance(node.value, str):
+      return node.value
+    if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
+      left = literal_string(node.left)
+      right = literal_string(node.right)
+      if left is not None and right is not None:
+        return left + right
+    return None
+
   for filepath in files:
     full = os.path.join(basedir, filepath)
     with open(full, encoding='utf-8') as f:
@@ -222,9 +233,11 @@ def extract_strings(files: list[str], basedir: str) -> list[POEntry]:
       is_flagged = name in ('tr', 'trn')
 
       if name in ('tr', 'tr_noop'):
-        if not node.args or not isinstance(node.args[0], ast.Constant) or not isinstance(node.args[0].value, str):
+        if not node.args:
           continue
-        msgid = node.args[0].value
+        msgid = literal_string(node.args[0])
+        if msgid is None:
+          continue
         if msgid in seen:
           if ref not in seen[msgid].source_refs:
             seen[msgid].source_refs.append(ref)
@@ -236,11 +249,10 @@ def extract_strings(files: list[str], basedir: str) -> list[POEntry]:
         if len(node.args) < 2:
           continue
         a1, a2 = node.args[0], node.args[1]
-        if not (isinstance(a1, ast.Constant) and isinstance(a1.value, str)):
+        msgid = literal_string(a1)
+        msgid_plural = literal_string(a2)
+        if msgid is None or msgid_plural is None:
           continue
-        if not (isinstance(a2, ast.Constant) and isinstance(a2.value, str)):
-          continue
-        msgid, msgid_plural = a1.value, a2.value
         if msgid in seen:
           if ref not in seen[msgid].source_refs:
             seen[msgid].source_refs.append(ref)

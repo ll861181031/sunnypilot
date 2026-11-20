@@ -13,7 +13,7 @@
 const std::string TEST_RLOG_URL = "https://commadataci.blob.core.windows.net/openpilotci/0c94aa1e1296d7c6/2021-05-05--19-48-37/0/rlog.bz2";
 
 void test_generate_dbc() {
-  std::string fn = std::string(OPENDBC_FILE_PATH) + "/tesla_can.dbc";
+  std::string fn = std::string(OPENDBC_FILE_PATH) + "/byd_song_plus_dmi_23_alt.dbc";
   DBCFile dbc_origin(fn);
   DBCFile dbc_from_generated("", dbc_origin.generateDBC());
 

@@ -4,8 +4,6 @@ Copyright (c) 2021-, Haibin Wen, sunnypilot, and a number of other contributors.
 This file is part of sunnypilot and is licensed under the MIT License.
 See the LICENSE.md file in the root directory for more details.
 """
-from typing import Any
-
 from opendbc.car import structs
 from opendbc.car.interfaces import CarInterfaceBase
 from openpilot.common.params import Params
@@ -41,12 +39,18 @@ def _initialize_neural_network_lateral_control(CP: structs.CarParams, CP_SP: str
     params = Params()
 
   nnlc_model_path, nnlc_model_name, exact_match = get_nn_model_path(CP)
+  wants_nnlc = params.get_bool("NeuralNetworkLateralControl")
 
   if nnlc_model_name == "MOCK":
-    cloudlog.error({"nnlc event": "car doesn't match any Neural Network model"})
-
-  if nnlc_model_name != "MOCK" and CP.steerControlType != structs.CarParams.SteerControlType.angle:
-    enabled = params.get_bool("NeuralNetworkLateralControl")
+    # A car with no matching network is the normal case for any car outside the
+    # training set, and it only means the feature cannot be used - it is not a
+    # fault. Logging it unconditionally put a red ERROR on stderr at every boot
+    # for every unsupported car, which is what made a healthy BYD port look
+    # broken. Only worth complaining about when the driver actually asked for it.
+    if wants_nnlc:
+      cloudlog.error({"nnlc event": "car doesn't match any Neural Network model"})
+  elif CP.steerControlType != structs.CarParams.SteerControlType.angle:
+    enabled = wants_nnlc
 
   CP_SP.neuralNetworkLateralControl.model.path = nnlc_model_path
   CP_SP.neuralNetworkLateralControl.model.name = nnlc_model_name
@@ -70,6 +74,8 @@ def _initialize_torque_lateral_control(CI: CarInterfaceBase, CP: structs.CarPara
 
 
 def _cleanup_unsupported_params(CP: structs.CarParams, CP_SP: structs.CarParamsSP, params: Params | None = None) -> None:
+  if CP.brand == "mock":
+    return
   if params is None:
     params = Params()
 
@@ -103,39 +109,10 @@ def setup_interfaces(CI: CarInterfaceBase, params: Params | None = None) -> None
   nnlc_enabled = _initialize_neural_network_lateral_control(CI.CP, CI.CP_SP, params)
   _initialize_intelligent_cruise_button_management(CI.CP, CI.CP_SP, params)
   _initialize_torque_lateral_control(CI, CI.CP, enforce_torque, nnlc_enabled)
-  _cleanup_unsupported_params(CI.CP, CI.CP_SP)
+  _cleanup_unsupported_params(CI.CP, CI.CP_SP, params)
 
   try:
     STATSLOGSP.raw('sunnypilot.car_params', CI.CP.to_dict())
   except RuntimeError:
     pass  # to_dict fails on macOS due to library issues.
   # STATSLOGSP.raw('sunnypilot_params.car_params_sp', CP_SP.to_dict()) # https://github.com/sunnypilot/opendbc/pull/361
-
-
-def initialize_params(params) -> list[dict[str, Any]]:
-  keys: list = []
-
-  # hyundai
-  keys.extend([
-    "HyundaiLongitudinalTuning",
-  ])
-
-  # subaru
-  keys.extend([
-    "SubaruStopAndGo",
-    "SubaruStopAndGoManualParkingBrake",
-  ])
-
-  # tesla
-  keys.extend([
-    "TeslaCoopSteering",
-    "TeslaMadsScreenButton",
-  ])
-
-  # toyota
-  keys.extend([
-    "ToyotaEnforceStockLongitudinal",
-    "ToyotaStopAndGoHack",
-  ])
-
-  return [{k: params.get(k, return_default=True)} for k in keys]

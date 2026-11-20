@@ -20,7 +20,15 @@ def get_short_branch(cwd: str | None = None) -> str:
 
 @cache
 def get_branch(cwd: str | None = None) -> str:
-  return run_cmd_default(["git", "rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"], cwd=cwd)
+  # Local development branches often have no upstream. This is a normal
+  # state for a desktop checkout, so keep git's diagnostic out of the UI log.
+  try:
+    return subprocess.check_output(
+      ["git", "rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"],
+      encoding="utf8", cwd=cwd, stderr=subprocess.DEVNULL,
+    ).strip()
+  except subprocess.CalledProcessError:
+    return ""
 
 
 @cache

@@ -13,6 +13,11 @@ from openpilot.system.ui.lib.application import gui_app
 from openpilot.common.transformations.camera import DEVICE_CAMERAS, DeviceCameraConfig, view_frame_from_device_frame
 from openpilot.common.transformations.orientation import rot_from_euler
 
+# Unconditional: the camera the screen should show must follow modeld whether or not
+# the sunnypilot UI variant is selected, and the indicator module has no UI dependency
+# beyond the ones already imported above.
+from openpilot.selfdrive.ui.sunnypilot.onroad.wide_camera_indicator import onroad_camera_stream
+
 if gui_app.sunnypilot_ui():
   from openpilot.selfdrive.ui.sunnypilot.onroad.alert_renderer import AlertRendererSP as AlertRenderer
   from openpilot.selfdrive.ui.sunnypilot.onroad.augmented_road_view import BORDER_COLORS_SP, AugmentedRoadViewSP
@@ -33,8 +38,6 @@ BORDER_COLORS = {
   **BORDER_COLORS_SP,
 }
 
-WIDE_CAM_MAX_SPEED = 10.0  # m/s (22 mph)
-ROAD_CAM_MIN_SPEED = 15.0  # m/s (34 mph)
 INF_POINT = np.array([1000.0, 0.0, 0.0])
 
 
@@ -120,20 +123,16 @@ class AugmentedRoadView(CameraView, AugmentedRoadViewSP):
     rl.draw_rectangle_rounded_lines_ex(border_rect, border_roundness, 10, UI_BORDER_SIZE, border_color)
 
   def _switch_stream_if_needed(self, sm):
-    if sm['selfdriveState'].experimentalMode and WIDE_CAM in self.available_streams:
-      v_ego = sm['carState'].vEgo
-      if v_ego < WIDE_CAM_MAX_SPEED:
-        target = WIDE_CAM
-      elif v_ego > ROAD_CAM_MIN_SPEED:
-        target = NARROW_ROAD_CAM
-      else:
-        # Hysteresis zone - keep current stream
-        target = self.stream_type
-    else:
-      target = NARROW_ROAD_CAM
-
+    # The road screen draws the main camera: that is the lens the pinhole
+    # intrinsics, the calibration and the model overlay were built for. The wide
+    # camera is only a fallback when the main stream does not exist. The HUD note
+    # follows the stream actually drawn, so a continuous wide model input cannot
+    # leave a permanent WIDE CAM badge over the main view.
+    target = onroad_camera_stream(NARROW_ROAD_CAM in self.available_streams,
+                                  WIDE_CAM in self.available_streams)
     if self.stream_type != target:
       self.switch_stream(target)
+    ui_state.onroad_wide_camera = self.stream_type == WIDE_CAM
 
   def _update_calibration(self):
     # Update device camera if not already set

@@ -88,13 +88,22 @@ class UIState(UIStateSP):
 
     # Core state variables
     self.is_metric: bool = self.params.get_bool("IsMetric")
-    self.is_release = False  # self.params.get_bool("IsReleaseBranch")
+    self.is_release = self.params.get_bool("IsReleaseBranch") or self.params.get_bool("IsReleaseSpBranch")
     self.always_on_dm: bool = self.params.get_bool("AlwaysOnDM")
     self.experimental_mode: bool = self.params.get_bool("ExperimentalMode")
     self.experimental_mode_confirmed: bool = self.params.get_bool("ExperimentalModeConfirmed")
     self.chestnut_present: bool = False
     self.chestnut_compiled: bool = chestnut_compiled()
     self.chestnut_active: bool | None = None
+    # Mirrors modeld's wide-camera gate so diagnostics can say whether the model's
+    # second input is the wide camera. Not a setting; cleared with the other runtime
+    # keys. The onroad HUD does not use this directly - it follows the stream that is
+    # actually drawn (onroad_wide_camera below), so a continuous wide model input
+    # cannot turn into a permanent on-screen badge.
+    self.wide_camera_active: bool = False
+    # Set by the onroad road view every time it selects a stream: true only while
+    # the wide camera is the picture on screen (the narrow camera's fallback).
+    self.onroad_wide_camera: bool = False
     self.chestnut_loading: bool = False
     self.usb_connected: bool = False
     self.usb_connected_ts: float | None = None
@@ -107,7 +116,6 @@ class UIState(UIStateSP):
     self.panda_type: log.PandaState.PandaType = log.PandaState.PandaType.unknown
     self.personality: log.LongitudinalPersonality = log.LongitudinalPersonality.standard
     self.has_longitudinal_control: bool = False
-    self.is_body: bool | None = False
     self.CP: car.CarParams | None = None
     self.light_sensor: float = -1.0
 
@@ -116,16 +124,12 @@ class UIState(UIStateSP):
     # Callbacks
     self._offroad_transition_callbacks: list[Callable[[], None]] = []
     self._engaged_transition_callbacks: list[Callable[[], None]] = []
-    self._on_body_changed_callbacks: list[Callable[[], None]] = []
 
   def add_offroad_transition_callback(self, callback: Callable[[], None]):
     self._offroad_transition_callbacks.append(callback)
 
   def add_engaged_transition_callback(self, callback: Callable[[], None]):
     self._engaged_transition_callbacks.append(callback)
-
-  def add_on_body_changed_callbacks(self, callback: Callable[[], None]):
-    self._on_body_changed_callbacks.append(callback)
 
   @property
   def engaged(self) -> bool:
@@ -166,7 +170,7 @@ class UIState(UIStateSP):
         self.panda_type = panda_states[0].pandaType
         # Check ignition status across all pandas
         if self.panda_type != log.PandaState.PandaType.unknown:
-          self.ignition = any(state.ignitionLine or state.ignitionCan for state in panda_states)
+          self.ignition = any(state.ignitionLine or state.ignitionCan for state in panda_states) or Params().get_bool("SimulateIgnition")
     elif not self.sm.alive["pandaStates"]:
       self.panda_type = log.PandaState.PandaType.unknown
 
@@ -179,12 +183,6 @@ class UIState(UIStateSP):
 
     # Update started state
     self.started = self.sm["deviceState"].started and self.ignition
-
-    # Update body state
-    if self.CP is not None and self.is_body != self.CP.notCar:
-      self.is_body = self.CP.notCar
-      for callback in self._on_body_changed_callbacks:
-        callback()
 
   def _update_status(self) -> None:
     if self.started and self.sm.updated["selfdriveState"]:
@@ -242,11 +240,12 @@ class UIState(UIStateSP):
   def update_params(self) -> None:
     # For slower operations
     # Update longitudinal control state
+    self.is_release = self.params.get_bool("IsReleaseBranch") or self.params.get_bool("IsReleaseSpBranch")
     CP_bytes = self.params.get("CarParamsPersistent")
     if CP_bytes is not None:
       self.CP = messaging.log_from_bytes(CP_bytes, car.CarParams)
       if self.CP.alphaLongitudinalAvailable:
-        self.has_longitudinal_control = self.params.get_bool("AlphaLongitudinalEnabled")
+        self.has_longitudinal_control = not self.is_release and self.params.get_bool("AlphaLongitudinalEnabled")
       else:
         self.has_longitudinal_control = self.CP.openpilotLongitudinalControl
 
@@ -258,6 +257,9 @@ class UIState(UIStateSP):
     if not self.chestnut_compiled:
       self.chestnut_compiled = chestnut_compiled()
     self.chestnut_active = self.params.get("ChestnutActive")
+    # modeld publishes this while the wide camera is the model's second input. It is
+    # runtime state, so the UI only mirrors it; the source of truth is modeld's gate.
+    self.wide_camera_active = self.params.get_bool("WideCameraActive")
     self.chestnut_loading = self.params.get_bool("ChestnutLoading")
     now = time.monotonic()
     if read_int(TYPEC_CC_ORIENTATION_PATH) != 0:

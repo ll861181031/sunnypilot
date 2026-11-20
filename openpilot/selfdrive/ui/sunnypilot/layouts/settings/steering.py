@@ -96,6 +96,20 @@ class SteeringLayout(Widget):
       title=lambda: tr("Neural Network Lateral Control (NNLC)"),
       description=""
     )
+    self._lane_line_detection_toggle = toggle_item_sp(
+      param="LaneLineDetectionEnabled",
+      title=lambda: tr("Lane Line Type Detection"),
+      description=lambda: tr("Classify the ego-lane boundaries as solid or dashed with an on-device model."),
+    )
+    self._lane_line_check_options = option_item_sp(
+      param="LaneLineCheck",
+      title=lambda: tr("Lane Change Line Check"),
+      min_value=0,
+      max_value=2,
+      value_change_step=1,
+      description=lambda: tr("0: off, 1: block a measured solid line, 2: solid or unmeasured need torque."),
+      label_callback=lambda value: tr("Off") if value == 0 else (tr("Block solid") if value == 1 else tr("Torque override")),
+    )
 
     items = [
       self._mads_toggle,
@@ -111,6 +125,9 @@ class SteeringLayout(Widget):
       self._torque_customization_button,
       LineSeparatorSP(40),
       self._nnlc_toggle,
+      LineSeparatorSP(40),
+      self._lane_line_detection_toggle,
+      self._lane_line_check_options,
     ]
     return items
 

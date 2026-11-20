@@ -12,6 +12,8 @@ the same commit so the bump shows up in code review.
 """
 from __future__ import annotations
 
+from opendbc.car.structs import car
+from openpilot.common.params import Params
 
 from openpilot.sunnypilot.sunnylink.capabilities import (
   CAPABILITY_DEFAULTS,
@@ -63,17 +65,27 @@ class TestProtocolVersion(OpenpilotTestCase):
 
 
 class TestOpaquePerBrandFlags(OpenpilotTestCase):
-  def test_subaru_has_sng_field_present(self):
-    assert "subaru_has_sng" in CAPABILITY_FIELDS
+  def test_legacy_v1_fields_default_to_false(self, caps):
+    for field in ("tesla_has_vehicle_bus", "stock_longitudinal", "subaru_has_sng", "hyundai_alpha_long_available"):
+      assert caps[field] is False
 
-  def test_hyundai_alpha_long_available_field_present(self):
-    assert "hyundai_alpha_long_available" in CAPABILITY_FIELDS
 
-  def test_subaru_has_sng_default_false(self, caps):
-    assert caps["subaru_has_sng"] is False
-
-  def test_hyundai_alpha_long_available_default_false(self, caps):
-    assert caps["hyundai_alpha_long_available"] is False
+class TestReleaseCapabilities(OpenpilotTestCase):
+  def test_release_flags_block_cached_alpha_longitudinal(self):
+    params = Params()
+    cp = car.CarParams.new_message(brand="byd", carFingerprint="BYD_SONG_PLUS_DMI_23_ALT",
+                                   alphaLongitudinalAvailable=True, openpilotLongitudinalControl=True)
+    params.put("CarParamsPersistent", cp.to_bytes(), block=True)
+    params.put_bool("AlphaLongitudinalEnabled", True, block=True)
+    for release, sp_release in ((False, False), (True, False), (False, True), (True, True)):
+      with self.subTest(release=release, sp_release=sp_release):
+        params.put_bool("IsReleaseBranch", release, block=True)
+        params.put_bool("IsReleaseSpBranch", sp_release, block=True)
+        result = generate_capabilities(params)
+        assert result["is_release"] is release
+        assert result["is_sp_release"] is sp_release
+        assert result["alpha_long_available"] is (not (release or sp_release))
+        assert result["has_longitudinal_control"] is (not (release or sp_release))
 
 
 class TestCapabilitiesShape(OpenpilotTestCase):

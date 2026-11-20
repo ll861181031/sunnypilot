@@ -113,6 +113,16 @@ class TestDesireHelperIntegration(OpenpilotTestCase):
                 left_edge_detected=False, right_edge_detected=False)
     assert dh.desire == expected_desire
 
+  def test_navi_turn_direction_overrides_desire(self, set_lane_turn_params):
+    dh = DesireHelper()
+    dh.alc.lane_change_set_timer = AutoLaneChangeMode.NUDGE
+    dh.update(DummyCarState(vEgo=5), True, 1.0,
+              navi_turn_direction=TurnDirection.turnLeft)
+    assert dh.desire == log.Desire.turnLeft
+    dh.update(DummyCarState(vEgo=5), True, 1.0,
+              navi_turn_direction=TurnDirection.turnRight)
+    assert dh.desire == log.Desire.turnRight
+
   def test_edge_blocks_lane_change(self, set_lane_turn_params):
     dh = DesireHelper()
     dh.alc.lane_change_set_timer = AutoLaneChangeMode.NUDGE

@@ -1,5 +1,12 @@
 Import('env', 'envCython', 'arch', 'msgq_python', 'common_python', 'np_version', 'acados')
 
+import sys
+
+# Build-time helper scripts run on the interpreter that is running scons (the repo
+# venv), not whatever `python3` resolves to on PATH. The system interpreter lacks
+# zstandard/setproctitle, so the hardcoded name failed those targets.
+PYTHON = sys.executable
+
 gen = "c_generated_code"
 
 casadi_model = [
@@ -73,7 +80,7 @@ else:
 lenv.Clean(generated_files, Dir(gen))
 generated_long = lenv.Command(generated_files,
                               source_list,
-                              f"cd {Dir('.').abspath} && python3 long_mpc.py")
+                              f"cd {Dir('.').abspath} && {PYTHON} long_mpc.py")
 lenv.Depends(generated_long, [msgq_python, common_python])
 
 lenv["CFLAGS"].append("-DACADOS_WITH_QPOASES")

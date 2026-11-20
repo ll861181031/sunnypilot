@@ -75,6 +75,15 @@ htmlcov
 *.zst
 *.rlog
 
+# BYD car-porting evidence: keep the small summaries, docs and scripts, ignore
+# the captured archives, marker logs and oversized generated JSON dumps.
+docs/car-porting/byd/evidence/**/*.zip
+docs/car-porting/byd/evidence/**/*.jsonl
+docs/car-porting/byd/evidence/byd-longitudinal-transitions-*-can-*.json
+docs/car-porting/byd/evidence/byd-longitudinal-transitions-*-op-*.json
+docs/car-porting/byd/evidence/byd-longitudinal-feedback-*.json
+docs/car-porting/byd/evidence/byd-longitudinal-audit-*-verified.json
+
 build/
 
 !**/.gitkeep
@@ -104,3 +113,12 @@ SKILL.md
 !.idea/customTargets.xml
 !.idea/tools/*
 !.run/*
+
+# Local rollback copies: keep them out of the tree (see AGENTS.md 2026-11-04).
+*.bak-*
+
+# Fork-local detector models (yolod / laned): 49 MB of blobs, artifacts not source.
+# Same rule as openpilot/selfdrive/modeld/models — regenerate or download, never version.
+openpilot/sunnypilot/yolod/models/*.onnx
+openpilot/sunnypilot/yolod/models/*.ncnn.bin
+openpilot/sunnypilot/laned/models/*.onnx

@@ -5,6 +5,7 @@ from enum import IntEnum
 
 import pyray as rl
 from openpilot.common.basedir import BASEDIR
+from openpilot.common.camera_config import driver_camera_enabled
 from openpilot.system.ui.lib.application import FontWeight, TextAlignment, gui_app
 from openpilot.system.ui.lib.multilang import tr
 from openpilot.system.ui.widgets import Widget
@@ -67,7 +68,7 @@ class TrainingGuide(Widget):
     if rl.check_collision_point_rec(mouse_pos, STEP_RECTS[self._step]):
       # Record DM camera?
       if self._step == DM_RECORD_STEP:
-        yes = rl.check_collision_point_rec(mouse_pos, DM_RECORD_YES_RECT)
+        yes = driver_camera_enabled() and rl.check_collision_point_rec(mouse_pos, DM_RECORD_YES_RECT)
         print(f"putting RecordFront to {yes}")
         ui_state.params.put_bool("RecordFront", yes, block=True)
 
@@ -77,6 +78,8 @@ class TrainingGuide(Widget):
           self._step = -1
 
       self._step += 1
+      if self._step == DM_RECORD_STEP and not driver_camera_enabled():
+        self._step += 1
 
       # Finished?
       if self._step >= len(self._image_paths):

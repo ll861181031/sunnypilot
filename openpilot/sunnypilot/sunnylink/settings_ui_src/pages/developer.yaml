@@ -101,14 +101,6 @@ sections:
     title: Show Advanced Controls
     description: Toggle visibility of advanced sunnypilot controls. This only changes the visibility of the toggles; it does
       not change the actual enabled/disabled state.
-  - key: EnableGithubRunner
-    widget: toggle
-    title: GitHub Runner Service
-    description: Enables or disables the GitHub runner service.
-    visibility:
-    - $ref: '#/macros/release_branches_hide'
-    enablement:
-    - $ref: '#/macros/advanced_only'
   - key: EnableCopyparty
     widget: toggle
     title: copyparty Service

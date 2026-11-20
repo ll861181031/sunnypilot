@@ -114,7 +114,6 @@ class PlatformSelector(Button):
       tr("Select a vehicle"),
       folders,
       search_title=tr("Search your vehicle"),
-      search_subtitle=tr("Enter model year (e.g., 2021) and model (Toyota Corolla):"),
       search_funcs=[lambda node: node.data.get('display_name', ''), lambda node: node.data.get('search_tags', '')]
     )
     callback = partial(self._on_platform_selected, dialog)

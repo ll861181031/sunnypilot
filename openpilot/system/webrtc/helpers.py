@@ -9,9 +9,14 @@ WEBRTCD_PORT = 5001
 class StreamRequestBody:
   sdp: str
   cameras: list[str]
-  enabled: bool
+  # CPlink's /stream request omits ``enabled`` and sends these extra fields.  Keep
+  # ``enabled`` defaulting to True so an omitted field means "I want video".
+  enabled: bool = True
   bridge_services_in: list[str] = field(default_factory=list)
   bridge_services_out: list[str] = field(default_factory=list)
+  client_id: str = ""
+  takeover: bool = False
+  carrot_state: bool = False
 
 
 def post_stream_request(body: StreamRequestBody) -> dict:

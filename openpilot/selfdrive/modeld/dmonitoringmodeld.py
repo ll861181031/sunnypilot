@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import os
-from openpilot.selfdrive.modeld.helpers import MODELS_DIR, get_tg_input_devices
+from openpilot.selfdrive.modeld.helpers import (MODELS_DIR, get_tg_input_devices, get_desktop_dm_device,
+                                              dmonitoring_pkl_path, dmonitoring_warp_path)
 from tinygrad.tensor import Tensor
 import time
 import pickle
@@ -16,11 +17,11 @@ from openpilot.common.transformations.model import dmonitoringmodel_intrinsics
 from openpilot.common.transformations.camera import _ar_ox_fisheye, _os_fisheye
 from openpilot.system.camerad.cameras.nv12_info import get_nv12_info
 from openpilot.common.file_chunker import open_file_chunked
+from openpilot.common.hardware import PC
 from openpilot.selfdrive.modeld.parse_model_outputs import sigmoid, safe_exp
 
 PROCESS_NAME = "openpilot.selfdrive.modeld.dmonitoringmodeld"
 SEND_RAW_PRED = os.getenv('SEND_RAW_PRED')
-MODEL_PKL_PATH = MODELS_DIR / 'dmonitoring_model_tinygrad.pkl'
 METADATA_PATH = MODELS_DIR / 'dmonitoring_model_metadata.pkl'
 
 
@@ -30,6 +31,8 @@ class ModelState:
 
   def __init__(self, cam_w: int, cam_h: int):
     self.DEV = get_tg_input_devices(PROCESS_NAME, chestnut=False)['DEV']
+    if PC and get_desktop_dm_device() == 'AMD':
+      self.DEV = 'AMD'
     with open(METADATA_PATH, 'rb') as f:
       model_metadata = pickle.load(f)
       self.input_shapes = model_metadata['input_shapes']
@@ -44,22 +47,42 @@ class ModelState:
     self.frame_buf_params = get_nv12_info(cam_w, cam_h)
     self.tensor_inputs = {k: Tensor(v, device='NPY').realize() for k,v in self.numpy_inputs.items()}
     self._blob_cache : dict[int, Tensor] = {}
-    self.model_run = pickle.load(open_file_chunked(str(MODEL_PKL_PATH)))
-    with open(MODELS_DIR / f'dm_warp_{cam_w}x{cam_h}_tinygrad.pkl', "rb") as f:
+    warp_path = dmonitoring_warp_path(cam_w, cam_h)
+    if not warp_path.is_file():
+      prefix = 'amd_' if PC and get_desktop_dm_device() == 'AMD' else ''
+      compiled = sorted(p.name.split('dm_warp_')[1].removesuffix('_tinygrad.pkl')
+                        for p in MODELS_DIR.glob(f'{prefix}dm_warp_*_tinygrad.pkl'))
+      # Joined explicitly: ruff's ISC002 forbids implicit multi-line concatenation here.
+      reason = " ".join([
+        f"No driver monitoring warp compiled for cabin frames at {cam_w}x{cam_h}",
+        f"(expected {warp_path.name}).",
+        f"Compiled warp sizes: {', '.join(compiled) or 'none'}.",
+        "Set DRIVER_WEBCAM_OUTPUT_WIDTH/DRIVER_WEBCAM_OUTPUT_HEIGHT",
+        "(or WEBCAM_OUTPUT_WIDTH/WEBCAM_OUTPUT_HEIGHT) to a compiled size.",
+      ])
+      raise RuntimeError(reason)
+    with open_file_chunked(str(dmonitoring_pkl_path())) as f:
+      self.model_run = pickle.load(f)
+    with open(warp_path, "rb") as f:
       self.image_warp = pickle.load(f)
+
+  def _frame_tensor(self, buf: VisionBuf) -> Tensor:
+    if self.DEV == 'AMD':
+      # USB VIPC buffers are host memory, not GPU pointers. Copy fresh pixels
+      # on every frame, including when a ring-buffer address is reused.
+      return Tensor(np.frombuffer(buf.data, dtype=np.uint8), device=self.DEV).realize()
+    ptr = np.frombuffer(buf.data, dtype=np.uint8).ctypes.data
+    if ptr not in self._blob_cache:
+      self._blob_cache[ptr] = Tensor.from_blob(ptr, (self.frame_buf_params[3],), dtype='uint8', device=self.DEV)
+    return self._blob_cache[ptr]
 
   def run(self, buf: VisionBuf, calib: np.ndarray, transform: np.ndarray) -> tuple[np.ndarray, float]:
     self.numpy_inputs['calib'][0,:] = calib
 
     t1 = time.perf_counter()
 
-    ptr = np.frombuffer(buf.data, dtype=np.uint8).ctypes.data
-    # There is a ringbuffer of imgs, just cache tensors pointing to all of them
-    if ptr not in self._blob_cache:
-      self._blob_cache[ptr] = Tensor.from_blob(ptr, (self.frame_buf_params[3],), dtype='uint8', device=self.DEV)
-
     self.warp_inputs_np['transform'][:] = transform[:]
-    self.tensor_inputs['input_img'] = self.image_warp(self._blob_cache[ptr], self.warp_inputs['transform'])
+    self.tensor_inputs['input_img'] = self.image_warp(self._frame_tensor(buf), self.warp_inputs['transform'])
 
     output = self.model_run(**self.tensor_inputs).numpy().flatten()
 

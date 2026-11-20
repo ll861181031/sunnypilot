@@ -28,7 +28,15 @@ class AESCipher:
     return cipher.encrypt(padded_data)
 
   def decrypt(self, encrypted_data: bytes) -> bytes:
+    if not encrypted_data or len(encrypted_data) % 16 != 0:
+      raise ValueError("ciphertext must be a non-empty multiple of 16 bytes")
     cipher = AES.new(self.key, AES.MODE_CBC, self.iv)
     decrypted_data = cipher.decrypt(encrypted_data)
     padding_length = decrypted_data[-1]
+    # PKCS#7: 1..16, and every padding byte must match. A zero/garbage pad used to
+    # slice to b"" and the restore path then reported success for empty JSON.
+    if not 1 <= padding_length <= 16:
+      raise ValueError(f"invalid PKCS#7 padding length: {padding_length}")
+    if decrypted_data[-padding_length:] != bytes([padding_length]) * padding_length:
+      raise ValueError("invalid PKCS#7 padding bytes")
     return decrypted_data[:-padding_length]

@@ -15,7 +15,22 @@
 #include "system/loggerd/logger.h"
 
 constexpr int MAIN_FPS = 20;
-const auto MAIN_ENCODE_TYPE = Hardware::PC() ? cereal::EncodeIndex::Type::BIG_BOX_LOSSLESS : cereal::EncodeIndex::Type::FULL_H_E_V_C;
+
+// This host has no hardware video encoder, so the road and cabin cameras are recorded
+// with software H.264. Upstream picks bigBoxLossless here, which the ffmpeg path turns
+// into ffvhuff: measured on real footage that is 711 MB per minute at 1344x760/20fps,
+// or 42 GB per hour. The segment deleter cannot keep up with that - its floor is 10% of
+// the volume, which was sized for the 64 GB disk on a comma device, so on a 457 GB disk
+// it waits until 411 GB has accumulated before deleting anything.
+//
+// H.264 at the same resolution measured 38 MB per minute on the same footage, 17x
+// smaller, for about half a core of extra encoding time. Set
+// SUNNYPILOT_LOSSLESS_RECORDING=1 to go back to the lossless recording.
+const auto MAIN_ENCODE_TYPE = Hardware::PC()
+    ? (getenv("SUNNYPILOT_LOSSLESS_RECORDING") != nullptr
+           ? cereal::EncodeIndex::Type::BIG_BOX_LOSSLESS
+           : cereal::EncodeIndex::Type::QCAMERA_H264)
+    : cereal::EncodeIndex::Type::FULL_H_E_V_C;
 #define NO_CAMERA_PATIENCE 500  // fall back to time-based rotation if all cameras are dead
 
 #define INIT_ENCODE_FUNCTIONS(encode_type)                                \

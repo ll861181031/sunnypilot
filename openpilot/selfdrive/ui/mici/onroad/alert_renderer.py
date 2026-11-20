@@ -8,9 +8,12 @@ from dataclasses import dataclass
 from openpilot.cereal import messaging, log
 from opendbc.car.structs import car
 from openpilot.selfdrive.ui.ui_state import ui_state
+from openpilot.selfdrive.ui.onroad.alert_text import camera_alert_text
+from openpilot.selfdrive.ui.onroad.alert_text import localize_alert_text
 from openpilot.common.filter_simple import BounceFilter, FirstOrderFilter
 from openpilot.common.hardware import COMMA_HARDWARE
 from openpilot.system.ui.lib.application import gui_app, FontWeight, TextAlignment
+from openpilot.system.ui.lib.multilang import tr
 from openpilot.system.ui.widgets import Widget
 from openpilot.system.ui.widgets.label import UnifiedLabel
 
@@ -148,7 +151,10 @@ class AlertRenderer(Widget, SpeedLimitAlertRenderer):
       return None
 
     # Return current alert
-    ret = Alert(text1=ss.alertText1, text2=ss.alertText2, size=ss.alertSize.raw, status=ss.alertStatus.raw,
+    text1, text2 = camera_alert_text(ss.alertType, ss.alertText1, ss.alertText2)
+    # selfdrived sends English literals; translate for display only.
+    ret = Alert(text1=localize_alert_text(tr(text1)), text2=localize_alert_text(tr(text2)),
+                size=ss.alertSize.raw, status=ss.alertStatus.raw,
                 visual_alert=ss.alertHudVisual, alert_type=ss.alertType)
     self._prev_alert = ret
     return ret

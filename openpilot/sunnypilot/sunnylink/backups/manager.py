@@ -116,7 +116,7 @@ class BackupManagerSP:
       payload = json.loads(json.dumps(backup_info.to_dict(), cls=SnakeCaseEncoder))
       self._update_progress(75.0, OperationType.BACKUP)
 
-      cloudlog.debug(f"Uploading backup with payload: {json.dumps(payload)}")
+      cloudlog.debug(f"Uploading backup ({len(encrypted_config)} base64 chars)")
       # Upload to sunnylink
       result = self.api.api_get(
         f"backup/{self.device_id}",

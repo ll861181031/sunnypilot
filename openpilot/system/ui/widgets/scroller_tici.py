@@ -7,6 +7,38 @@ ITEM_SPACING = 40
 LINE_COLOR = rl.GRAY
 LINE_PADDING = 40
 
+# Scroll indicator. Every settings panel in this UI is a scrolling list and the
+# panel draws no other affordance for it, so a page whose last row sat below the
+# fold looked exactly like a page whose last row did not exist. The bar answers
+# both "is there more" and "how much of it am I seeing".
+SCROLLBAR_WIDTH = 6
+SCROLLBAR_MARGIN = 10
+SCROLLBAR_MIN_THUMB = 60
+SCROLLBAR_TRACK_COLOR = rl.Color(70, 70, 70, 140)
+SCROLLBAR_THUMB_COLOR = rl.Color(200, 200, 200, 190)
+
+
+def scroll_indicator_rects(rect: rl.Rectangle, content_height: float,
+                           scroll: float) -> tuple[rl.Rectangle, rl.Rectangle] | None:
+  """Track and thumb rectangles for the indicator, or None when nothing scrolls.
+
+  Kept free of drawing calls so the geometry can be tested without a GL context:
+  a bar that is drawn one pixel wide or parked off screen is worse than none.
+  """
+  viewport = rect.height
+  if content_height <= viewport + 1 or viewport <= 0:
+    return None
+
+  thumb_height = min(viewport, max(SCROLLBAR_MIN_THUMB, viewport * viewport / content_height))
+  travel = max(0.0, viewport - thumb_height)
+  scrollable = content_height - viewport
+  progress = min(max(-scroll / scrollable, 0.0), 1.0)
+  x = rect.x + rect.width - SCROLLBAR_MARGIN - SCROLLBAR_WIDTH
+
+  track = rl.Rectangle(x, rect.y, SCROLLBAR_WIDTH, viewport)
+  thumb = rl.Rectangle(x, rect.y + progress * travel, SCROLLBAR_WIDTH, thumb_height)
+  return track, thumb
+
 
 class LineSeparator(Widget):
   def __init__(self, height: int = 1):
@@ -54,6 +86,12 @@ class Scroller(Widget):
     if not self._pad_end:
       content_height -= self._spacing
     scroll = self.scroll_panel.update(self._rect, rl.Rectangle(0, 0, self._rect.width, content_height))
+
+    indicator = scroll_indicator_rects(self._rect, content_height, scroll)
+    if indicator is not None:
+      track, thumb = indicator
+      rl.draw_rectangle_rounded(track, 0.5, 4, SCROLLBAR_TRACK_COLOR)
+      rl.draw_rectangle_rounded(thumb, 0.5, 4, SCROLLBAR_THUMB_COLOR)
 
     rl.begin_scissor_mode(int(self._rect.x), int(self._rect.y),
                           int(self._rect.width), int(self._rect.height))

@@ -1,5 +1,12 @@
 Import('env', 'common', 'msgq')
 
+import sys
+
+# Build-time helper scripts run on the interpreter that is running scons (the repo
+# venv), not whatever `python3` resolves to on PATH. The system interpreter lacks
+# zstandard/setproctitle, so the hardcoded name failed those targets.
+PYTHON = sys.executable
+
 cereal_dir = Dir('.')
 gen_dir = Dir('gen')
 
@@ -14,7 +21,7 @@ env.Command([f'gen/cpp/{s}.c++' for s in all_output] + [f'gen/cpp/{s}.h' for s i
 cereal = env.Library('cereal', [f'gen/cpp/{s}.c++' for s in all_output])
 
 # Build messaging
-services_h = env.Command(['services.h'], ['services.py'], 'python3 ' + cereal_dir.path + '/services.py > $TARGET')
+services_h = env.Command(['services.h'], ['services.py'], PYTHON + ' ' + cereal_dir.path + '/services.py > $TARGET')
 env.Program('messaging/bridge', ['messaging/bridge.cc', 'messaging/msgq_to_zmq.cc', 'messaging/bridge_zmq.cc'], LIBS=[msgq, common, 'pthread'])
 
 socketmaster = env.Library('socketmaster', ['messaging/socketmaster.cc'])

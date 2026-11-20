@@ -18,54 +18,13 @@ from openpilot.tools.lib.filereader import FileReader
 from openpilot.tools.lib.logreader import LogReader, save_log
 from openpilot.tools.lib.url_file import URLFile
 
-source_segments = [
-  ("HYUNDAI", "02c45f73a2e5c6e9|2021-01-01--19-08-22--1"),     # HYUNDAI.HYUNDAI_SONATA
-  ("HYUNDAI2", "d545129f3ca90f28|2022-11-07--20-43-08--3"),    # HYUNDAI.HYUNDAI_KIA_EV6 (+ QCOM GPS)
-  ("TOYOTA", "0982d79ebb0de295|2021-01-04--17-13-21--13"),     # TOYOTA.TOYOTA_PRIUS
-  ("TOYOTA2", "0982d79ebb0de295|2021-01-03--20-03-36--6"),     # TOYOTA.TOYOTA_RAV4
-  ("TOYOTA3", "8011d605be1cbb77|000000cc--8e8d8ec716--6"),     # TOYOTA.TOYOTA_COROLLA_TSS2
-  ("HONDA", "eb140f119469d9ab|2021-06-12--10-46-24--27"),      # HONDA.HONDA_CIVIC (NIDEC)
-  ("HONDA2", "7d2244f34d1bbcda|2021-06-25--12-25-37--26"),     # HONDA.HONDA_ACCORD (BOSCH)
-  ("CHRYSLER", "4deb27de11bee626|2021-02-20--11-28-55--8"),    # CHRYSLER.CHRYSLER_PACIFICA_2018_HYBRID
-  ("RAM", "17fc16d840fe9d21|2023-04-26--13-28-44--5"),         # CHRYSLER.RAM_1500_5TH_GEN
-  ("SUBARU", "341dccd5359e3c97|2022-09-12--10-35-33--3"),      # SUBARU.SUBARU_OUTBACK
-  ("GM", "376bf99325883932|2022-10-27--13-41-22--1"),         # GM.CHEVROLET_BOLT_EUV
-  ("NISSAN", "35336926920f3571|2021-02-12--18-38-48--46"),     # NISSAN.NISSAN_XTRAIL
-  ("VOLKSWAGEN", "de9592456ad7d144|2021-06-29--11-00-15--6"),  # VOLKSWAGEN.VOLKSWAGEN_GOLF
-  # FIXME the sensor timings are bad in mazda segment, we're not fully testing it, but it should be replaced
-  ("MAZDA", "bd6a637565e91581|2021-10-30--15-14-53--4"),       # MAZDA.MAZDA_CX9_2021
-  ("FORD", "54827bf84c38b14f|2023-01-26--21-59-07--4"),        # FORD.FORD_BRONCO_SPORT_MK1
-  ("RIVIAN", "bc095dc92e101734|000000db--ee9fe46e57--1"),      # RIVIAN.RIVIAN_R1_GEN1
-  ("TESLA", "2c912ca5de3b1ee9|0000025d--6eb6bcbca4--4"),       # TESLA.TESLA_MODEL_Y
-
-  # Enable when port is tested and dashcamOnly is no longer set
-  #("VOLKSWAGEN2", "3cfdec54aa035f3f|2022-07-19--23-45-10--2"),  # VOLKSWAGEN.VOLKSWAGEN_PASSAT_NMS
-]
-
-segments = [
-  ("HYUNDAI", "regenAA0FC4ED71E|2025-04-08--22-57-50--0"),
-  ("HYUNDAI2", "regenAFB9780D823|2025-04-08--23-00-34--0"),
-  ("TOYOTA", "regen218A4DCFAA1|2025-04-08--22-57-51--0"),
-  # TODO: get new RAV4 route without enableDsu
-  # ("TOYOTA2", "regen107352E20EB|2025-04-08--22-57-46--0"),
-  ("TOYOTA3", "regen1455E3B4BDF|2025-04-09--03-26-06--0"),
-  ("HONDA", "regenB328FF8BA0A|2025-04-08--22-57-45--0"),
-  ("HONDA2", "regen6170C8C9A35|2025-04-08--22-57-46--0"),
-  ("CHRYSLER", "regen5B28FC2A437|2025-04-08--23-04-24--0"),
-  ("RAM", "regenBF81EA96E08|2025-04-08--23-06-54--0"),
-  ("SUBARU", "regen7366F13F6A1|2025-04-08--23-07-07--0"),
-  ("GM", "regen1271097D038|2025-04-09--03-26-00--0"),
-  ("NISSAN", "regen15D60604EAB|2025-04-08--23-06-59--0"),
-  ("VOLKSWAGEN", "regen0F2F06C9539|2025-04-08--23-06-56--0"),
-  ("MAZDA", "regenACF84CCF482|2024-08-30--03-21-55--0"),
-  ("FORD", "regen755D8CB1E1F|2025-04-08--23-13-43--0"),
-  ("RIVIAN", "regen5FCAC896BBE|2025-04-08--23-13-35--0"),
-  ("TESLA", "2c912ca5de3b1ee9|0000025d--6eb6bcbca4--4"),
-]
+# 尚未配置宋 ALT 的公开参考日志；本地行车日志不得自动发布为 CI 素材。
+source_segments: list[tuple[str, str]] = []
+segments: list[tuple[str, str]] = []
 
 # dashcamOnly makes don't need to be tested until a full port is done
 excluded_interfaces = {brand for brand, platforms in interface_names.items()
-                       if all(interfaces[platform].get_non_essential_params(platform).dashcamOnly for platform in platforms)} | {"body"}
+                       if all(interfaces[platform].get_non_essential_params(platform).dashcamOnly for platform in platforms)}
 
 BASE_URL = "https://raw.githubusercontent.com/sunnypilot/ci-artifacts/refs/heads/process-replay/"
 REF_COMMIT_FN = os.path.join(PROC_REPLAY_DIR, "ref_commit")
@@ -129,11 +88,11 @@ if __name__ == "__main__":
   parser.add_argument("--whitelist-procs", type=str, nargs="*", default=all_procs,
                       help="Whitelist given processes from the test (e.g. controlsd)")
   parser.add_argument("--whitelist-cars", type=str, nargs="*", default=all_cars,
-                      help="Whitelist given cars from the test (e.g. HONDA)")
+                      help="Whitelist given cars from the test (e.g. BYD)")
   parser.add_argument("--blacklist-procs", type=str, nargs="*", default=[],
                       help="Blacklist given processes from the test (e.g. controlsd)")
   parser.add_argument("--blacklist-cars", type=str, nargs="*", default=[],
-                      help="Blacklist given cars from the test (e.g. HONDA)")
+                      help="Blacklist given cars from the test (e.g. BYD)")
   parser.add_argument("--ignore-fields", type=str, nargs="*", default=[],
                       help="Extra fields or msgs to ignore (e.g. driverMonitoringState.events)")
   parser.add_argument("--ignore-msgs", type=str, nargs="*", default=[],
@@ -144,9 +103,15 @@ if __name__ == "__main__":
                       help="Max amount of parallel jobs")
   args = parser.parse_args()
 
+  if not segments:
+    parser.error("尚未配置 BYD_SONG_PLUS_DMI_23_ALT 的公开参考日志，无法执行公共回放回归")
+
   tested_procs = set(args.whitelist_procs) - set(args.blacklist_procs)
   tested_cars = set(args.whitelist_cars) - set(args.blacklist_cars)
   tested_cars = {c.upper() for c in tested_cars}
+
+  if not tested_procs or not any(car in tested_cars for car, _ in segments):
+    parser.error("筛选后没有可执行的车型或进程，无法执行回放回归")
 
   full_test = (tested_procs == all_procs) and (tested_cars == all_cars) and all(len(x) == 0 for x in (args.ignore_fields, args.ignore_msgs))
   os.makedirs(os.path.dirname(FAKEDATA), exist_ok=True)
@@ -186,10 +151,6 @@ if __name__ == "__main__":
 
       for cfg in CONFIGS:
         if cfg.proc_name not in tested_procs:
-          continue
-
-        # to speed things up, we only test all segments on card
-        if cfg.proc_name not in ('card', 'controlsd', 'lagd') and car_brand not in ('HYUNDAI', 'TOYOTA'):
           continue
 
         cur_log_fn = os.path.join(FAKEDATA, f"{segment}_{cfg.proc_name}_{cur_commit}.zst".replace("|", "_"))

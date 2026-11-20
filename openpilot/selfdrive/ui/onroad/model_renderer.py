@@ -1,7 +1,7 @@
 import colorsys
 import numpy as np
 import pyray as rl
-from openpilot.cereal import messaging
+from openpilot.cereal import log, messaging
 from opendbc.car.structs import car
 from dataclasses import dataclass, field
 from openpilot.common.filter_simple import FirstOrderFilter
@@ -13,6 +13,14 @@ from openpilot.system.ui.lib.shader_polygon import draw_polygon, Gradient
 from openpilot.system.ui.widgets import Widget
 
 from openpilot.selfdrive.ui.sunnypilot.onroad.model_renderer import ChevronMetrics, ModelRendererSP
+from openpilot.selfdrive.ui.sunnypilot.onroad.road_markings import (
+  blind_spot_draw_state,
+  blindspot_barrier_quads,
+  lane_dash_segments,
+  lane_type_is_dashed,
+  project_blindspot_barrier,
+  project_lane_segments,
+)
 
 CLIP_MARGIN = 500
 MIN_DRAW_DISTANCE = 10.0
@@ -54,11 +62,17 @@ class ModelRenderer(Widget, ChevronMetrics, ModelRendererSP):
     self._blend_filter = FirstOrderFilter(1.0, 0.25, 1 / gui_app.target_fps)
     self._prev_allow_throttle = True
     self._lane_line_probs = np.zeros(4, dtype=np.float32)
+    self._lane_draw_distance = MAX_DRAW_DISTANCE
     self._road_edge_stds = np.zeros(2, dtype=np.float32)
     self._lead_vehicles = [LeadVehicle(), LeadVehicle()]
     self._path_offset_z = HEIGHT_INIT[0]
     self._counter = -1
-    self._camera_offset = ui_state.params.get("CameraOffset", return_default=True) if ui_state.active_bundle else 0.0
+    # modeld shifts its input view by this much whether or not a downloaded model bundle
+    # is active, so the projection has to undo the same shift or the drawn lane lines sit
+    # off the real markings by exactly this amount. This used to be read only when a
+    # bundle was active; on the stock model that silently skipped the compensation, which
+    # is why the overlay did not line up once the offset was set to something non-zero.
+    self._camera_offset = ui_state.params.get("CameraOffset", return_default=True)
     # Initialize ModelPoints objects
     self._path = ModelPoints()
     self._lane_lines = [ModelPoints() for _ in range(4)]
@@ -106,7 +120,9 @@ class ModelRenderer(Widget, ChevronMetrics, ModelRendererSP):
     self._path_offset_z = extrinsics_calibration.height[0] if extrinsics_calibration.height else HEIGHT_INIT[0]
 
     if self._counter % 60 == 0:
-      self._camera_offset = ui_state.params.get("CameraOffset", return_default=True) if ui_state.active_bundle else 0.0
+      # Unconditional for the same reason as in __init__: modeld applies the offset to
+      # the stock model too, so the projection must always compensate for it.
+      self._camera_offset = ui_state.params.get("CameraOffset", return_default=True)
     self._counter += 1
 
     if sm.updated['carParams']:
@@ -135,6 +151,8 @@ class ModelRenderer(Widget, ChevronMetrics, ModelRendererSP):
     # Draw elements
     self._draw_lane_lines()
     self._draw_path(sm)
+    self.blendful.draw(self._rect)
+    self._draw_blind_spot(sm)
 
     if render_lead_indicator and radar_state:
       self._draw_lead_indicator()
@@ -173,6 +191,7 @@ class ModelRenderer(Widget, ChevronMetrics, ModelRendererSP):
   def _update_model(self, lead, path_x_array):
     """Update model visualization data based on model message"""
     max_distance = np.clip(path_x_array[-1], MIN_DRAW_DISTANCE, MAX_DRAW_DISTANCE)
+    self._lane_draw_distance = max_distance
     max_idx = self._get_path_length_idx(self._lane_lines[0].raw_points[:, 0], max_distance)
 
     # Update lane lines using raw points
@@ -184,6 +203,11 @@ class ModelRenderer(Widget, ChevronMetrics, ModelRendererSP):
     # Update road edges using raw points
     for road_edge in self._road_edges:
       road_edge.projected_points = self._map_line_to_polygon(road_edge.raw_points, 0.025, 0.0, max_idx, max_distance)
+
+    # Lane-centre overlay from the Blendful telemetry modeld publishes. Self-hides
+    # when the trust is zero, so it costs a projection only on frames where the
+    # correction is actually being applied.
+    self.blendful.update(self, max_idx, max_distance)
 
     # Update path using raw points
     if lead and lead.present:
@@ -267,14 +291,31 @@ class ModelRenderer(Widget, ChevronMetrics, ModelRendererSP):
     return LeadVehicle(glow=glow, chevron=chevron, fill_alpha=int(fill_alpha))
 
   def _draw_lane_lines(self):
-    """Draw lane lines and road edges"""
+    """Draw lane lines and road edges; ego-boundary types select solid/dashed."""
+    sm = ui_state.sm
+    cs_sp = None
+    if sm.valid.get('carStateSP') and sm.alive.get('carStateSP') and sm['carStateSP'].laneLineTypesValid:
+      cs_sp = sm['carStateSP']
+    left_code = int(cs_sp.leftLaneLine) if cs_sp is not None else -1
+    right_code = int(cs_sp.rightLaneLine) if cs_sp is not None else -1
+
     for i, lane_line in enumerate(self._lane_lines):
       if lane_line.projected_points.size == 0:
         continue
 
       alpha = np.clip(self._lane_line_probs[i], 0.0, 0.7)
       color = rl.Color(255, 255, 255, int(alpha * 255))
-      draw_polygon(self._rect, lane_line.projected_points, color)
+      lane_code = left_code if i == 1 else right_code if i == 2 else -1
+      if lane_type_is_dashed(lane_code) and lane_line.raw_points.size:
+        half_width = 0.025 * float(self._lane_line_probs[i])
+        segments = project_lane_segments(
+          lane_dash_segments(lane_line.raw_points, self._lane_draw_distance),
+          half_width, self._car_space_transform, self._clip_region,
+        )
+        for segment in segments:
+          draw_polygon(self._rect, segment, color)
+      else:
+        draw_polygon(self._rect, lane_line.projected_points, color)
 
     for i, road_edge in enumerate(self._road_edges):
       if road_edge.projected_points.size == 0:
@@ -283,6 +324,40 @@ class ModelRenderer(Widget, ChevronMetrics, ModelRendererSP):
       alpha = np.clip(1.0 - self._road_edge_stds[i], 0.0, 1.0)
       color = rl.Color(255, 0, 0, int(alpha * 255))
       draw_polygon(self._rect, road_edge.projected_points, color)
+
+  def _draw_blind_spot(self, sm):
+    """Draw CarrotPilot-style amber BSD and green radar-assist barriers."""
+    if not (sm.valid.get('carState') and sm.valid.get('modelV2')):
+      return
+    if self._path.raw_points.shape[0] < 2:
+      return
+
+    car_state = sm['carState']
+    radar_state = sm['radarState'] if sm.valid.get('radarState') else None
+    meta = sm['modelV2'].meta
+    pre_lane_change = meta.laneChangeState == log.LaneChangeState.preLaneChange
+    left_bsd, right_bsd, left_assist, right_assist = blind_spot_draw_state(
+      car_state, radar_state, pre_lane_change, meta.laneChangeDirection, car_state.vEgo,
+    )
+    if not (left_bsd or right_bsd or left_assist or right_assist):
+      return
+
+    max_idx = self._get_path_length_idx(self._path.raw_points[:, 0], 40.0)
+    warn_color = rl.Color(255, 215, 0, 150)
+    assist_color = rl.Color(0, 204, 0, 150)
+    for active, shift, color in (
+      (left_bsd, -1.7, warn_color),
+      (right_bsd, 1.7, warn_color),
+      (left_assist, -1.7, assist_color),
+      (right_assist, 1.7, assist_color),
+    ):
+      if not active:
+        continue
+      polygon = project_blindspot_barrier(
+        self._path.raw_points[:max_idx + 1], shift, self._car_space_transform, self._clip_region,
+      )
+      for quad in blindspot_barrier_quads(polygon):
+        draw_polygon(self._rect, quad, color)
 
   def _draw_path(self, sm):
     """Draw path with dynamic coloring based on mode and throttle state."""

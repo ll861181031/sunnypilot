@@ -6,11 +6,16 @@ import sys
 import time
 import traceback
 
+# PWD is shell-maintained state and can be stale before imports change cwd.
+# Remove it before cereal/KJ initializes and checks the filesystem location.
+os.environ.pop("PWD", None)
+
 from openpilot.cereal import log
 import openpilot.cereal.messaging as messaging
 import openpilot.system.sentry as sentry
 from openpilot.common.utils import atomic_write
 from openpilot.common.params import Params, ParamKeyFlag
+from openpilot.common.camera_config import driver_camera_enabled, apply_driver_camera_settings
 from openpilot.common.text_window import TextWindow
 from openpilot.common.hardware import HARDWARE, PC
 from openpilot.system.manager.helpers import unblock_stdout, save_bootlog
@@ -20,9 +25,9 @@ from openpilot.system.athena.registration import register, UNREGISTERED_DONGLE_I
 from openpilot.common.swaglog import cloudlog, add_file_handler
 from openpilot.common.version import get_build_metadata
 from openpilot.common.hardware.hw import Paths
+from openpilot.selfdrive.pandad import usb_readonly_enabled
 
 from openpilot.sunnypilot.system.params_migration import run_migration
-
 
 def manager_init() -> None:
   save_bootlog()
@@ -47,7 +52,7 @@ def manager_init() -> None:
     if not os.path.exists(prebuilt_path):
       open(prebuilt_path, 'x').close()
 
-  if params.get_bool("RecordFrontLock"):
+  if driver_camera_enabled() and params.get_bool("RecordFrontLock"):
     params.put_bool("RecordFront", True, block=True)
 
   if not PC:
@@ -58,6 +63,8 @@ def manager_init() -> None:
     default_value = params.get_default_value(k)
     if default_value is not None and params.get(k) is None:
       params.put(k, default_value, block=True)
+
+  apply_driver_camera_settings(params)
 
   # Create folders needed for msgq
   try:
@@ -142,7 +149,7 @@ def manager_thread() -> None:
   while True:
     sm.update(1000)
 
-    started = sm['deviceState'].started
+    started = sm['deviceState'].started and not usb_readonly_enabled()
 
     if started and not started_prev:
       params.clear_all(ParamKeyFlag.CLEAR_ON_ONROAD_TRANSITION)

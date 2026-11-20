@@ -1,0 +1,75 @@
+--- a/params.go
++++ b/params.go
+@@ -12,8 +12,8 @@
+ )
+ 
+ var (
+-	ParamsPath    string = "/data/params/d"
+-	MemParamsPath string = "/dev/shm/params/d"
++	ParamsPath    string = EnvPath("MAPD_PARAMS_PATH", "/data/params/d")
++	MemParamsPath string = EnvPath("MAPD_MEM_PARAMS_PATH", "/dev/shm/params/d")
+ 	BasePath      string = GetBasePath()
+ )
+ 
+@@ -53,7 +53,17 @@
+ 	return false, errors.Wrap(err, "could not check param file stats")
+ }
+ 
++func EnvPath(key, fallback string) string {
++	if value := os.Getenv(key); value != "" {
++		return value
++	}
++	return fallback
++}
++
+ func GetBasePath() string {
++	if root := os.Getenv("MAPD_ROOT"); root != "" {
++		return root
++	}
+ 	exists, err := Exists("/data/media/0")
+ 	logde(errors.Wrap(err, "could not check if media directory exists"))
+ 	if exists {
+--- a/math_test.go
++++ b/math_test.go
+@@ -1,6 +1,7 @@
+ package main
+ 
+ import (
++	"math"
+ 	"testing"
+ 
+ 	"github.com/bradleyjkemp/cupaloy"
+@@ -27,11 +28,19 @@
+ func TestVector(t *testing.T) {
+ 	x, y := Vector(39.87597128296241, -83.063094468947, 39.8743989043051, -83.0064776388221)
+ 
+-	cupaloy.SnapshotT(t, x, y)
++	// ARM64 and AMD64 math differ in the last few floating-point bits.
++	if !(math.Abs(x-(-0.032160598431449625)) <= 1e-12 && math.Abs(y-(-0.0023208457541413112)) <= 1e-12) {
++		t.Fatalf("unexpected vector: %.17g, %.17g", x, y)
++	}
+ }
+ 
+ func TestBearing(t *testing.T) {
+ 	north := Bearing(39.89058447975868, -83.02569199443768, 39.898404491651426, -83.02610011832185)
+ 	east := Bearing(39.97639072630465, -83.11918338645518, 39.97031064469578, -82.8450246292918)
+-	cupaloy.SnapshotT(t, "Should be near 0 (northbound)", north*TO_DEGREES, "Should be near 90 (eastbound)", east*TO_DEGREES)
++	if !(math.Abs(north*TO_DEGREES-(-2.292842670334762)) <= 1e-9) {
++		t.Fatalf("unexpected north bearing: %.17g", north*TO_DEGREES)
++	}
++	if !(math.Abs(east*TO_DEGREES-91.56955405832893) <= 1e-9) {
++		t.Fatalf("unexpected east bearing: %.17g", east*TO_DEGREES)
++	}
+ }
+--- a/generate_offline.go
++++ b/generate_offline.go
+@@ -52,6 +52,9 @@
+ )
+ 
+ func GetBaseOpPath() string {
++	if root := os.Getenv("MAPD_ROOT"); root != "" {
++		return root
++	}
+ 	exists, err := Exists("/data/media/0")
+ 	logde(err)
+ 	if exists {

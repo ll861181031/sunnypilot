@@ -8,7 +8,8 @@ import openpilot.cereal.messaging as messaging
 from openpilot.common.constants import CV
 from openpilot.common.git import get_short_branch
 from openpilot.common.realtime import DT_CTRL
-from openpilot.selfdrive.locationd.calibrationd import MIN_SPEED_FILTER
+from openpilot.common.camera_mount import camera_mount_adjustment
+from openpilot.selfdrive.locationd.calibrationd import MIN_SPEED_FILTER, mount_adjustment
 from openpilot.common.hardware import HARDWARE
 
 from openpilot.sunnypilot.selfdrive.selfdrived.events_base import EventsBase, Priority, ET, Alert, \
@@ -86,11 +87,26 @@ def below_steer_speed_alert(CP: car.CarParams, CS: car.CarState, sm: messaging.S
     Priority.LOW, VisualAlert.none, AudibleAlert.prompt, 0.4)
 
 
+def mount_needs_adjustment(rpy) -> bool:
+  """True only when the mount is outside the range calibrationd can accept."""
+  return mount_adjustment(rpy) != (0.0, 0.0)
+
+
+def mount_adjustment_text(rpy) -> str:
+  """Correction still required, empty when the current mount is acceptable."""
+  yaw, pitch = mount_adjustment(rpy)
+  return camera_mount_adjustment(yaw, pitch)
+
+
 def calibration_incomplete_alert(CP: car.CarParams, CS: car.CarState, sm: messaging.SubMaster, metric: bool, soft_disable_time: int, personality) -> Alert:
-  first_word = 'Recalibrating' if sm['extrinsicsCalibration'].calStatus == log.ExtrinsicsCalibration.Status.recalibrating else 'Calibrating'
+  calib = sm['extrinsicsCalibration']
+  first_word = 'Recalibrating' if calib.calStatus == log.ExtrinsicsCalibration.Status.recalibrating else 'Calibrating'
+  # An out-of-range mount can never finish calibrating, so say which way to move
+  # the camera instead of only telling the driver to keep driving.
+  adjustment = mount_adjustment_text(calib.rpyCalib)
   return Alert(
-    f"{first_word}: {sm['extrinsicsCalibration'].calPerc:.0f}%",
-    f"Drive Above {get_display_speed(MIN_SPEED_FILTER, metric)}",
+    f"{first_word}: {calib.calPerc:.0f}%",
+    adjustment or f"Drive Above {get_display_speed(MIN_SPEED_FILTER, metric)}",
     AlertStatus.normal, AlertSize.mid,
     Priority.LOWEST, VisualAlert.none, AudibleAlert.none, .2)
 
@@ -134,12 +150,29 @@ def camera_malfunction_alert(CP: car.CarParams, CS: car.CarState, sm: messaging.
   return NormalPermanentAlert("Camera Malfunction", ', '.join(bad_cams))
 
 
+def calibration_invalid_text(sm: messaging.SubMaster) -> str:
+  """What to do about an invalid calibration, e.g. 'Turn camera left 4.2°'."""
+  return mount_adjustment_text(sm['extrinsicsCalibration'].rpyCalib) or "Remount Device & Recalibrate"
+
+
+def calibration_invalid_soft_disable(CP: car.CarParams, CS: car.CarState, sm: messaging.SubMaster, metric: bool, soft_disable_time: int, personality) -> Alert:
+  return soft_disable_alert(f"Calibration Invalid: {calibration_invalid_text(sm)}")(CP, CS, sm, metric, soft_disable_time, personality)
+
+
+def calibration_invalid_no_entry(CP: car.CarParams, CS: car.CarState, sm: messaging.SubMaster, metric: bool, soft_disable_time: int, personality) -> Alert:
+  return NoEntryAlert(f"Calibration Invalid: {calibration_invalid_text(sm)}")
+
+
 def calibration_invalid_alert(CP: car.CarParams, CS: car.CarState, sm: messaging.SubMaster, metric: bool, soft_disable_time: int, personality) -> Alert:
   rpy = sm['extrinsicsCalibration'].rpyCalib
-  yaw = math.degrees(rpy[2] if len(rpy) == 3 else math.nan)
-  pitch = math.degrees(rpy[1] if len(rpy) == 3 else math.nan)
-  angles = f"Remount Device (Pitch: {pitch:.1f}°, Yaw: {yaw:.1f}°)"
-  return NormalPermanentAlert("Calibration Invalid", angles)
+  # Tell the driver how far to aim the camera; fall back to the raw angles if the
+  # status is invalid for some reason other than the mount angle.
+  text = mount_adjustment_text(rpy)
+  if not text:
+    yaw = math.degrees(rpy[2] if len(rpy) == 3 else math.nan)
+    pitch = math.degrees(rpy[1] if len(rpy) == 3 else math.nan)
+    text = f"Remount Device (Pitch: {pitch:.1f}°, Yaw: {yaw:.1f}°)"
+  return NormalPermanentAlert("Calibration Invalid", text)
 
 
 def paramsd_invalid_alert(CP: car.CarParams, CS: car.CarState, sm: messaging.SubMaster, metric: bool, soft_disable_time: int, personality) -> Alert:
@@ -195,18 +228,6 @@ def longitudinal_maneuver_alert(CP: car.CarParams, CS: car.CarState, sm: messagi
 def personality_changed_alert(CP: car.CarParams, CS: car.CarState, sm: messaging.SubMaster, metric: bool, soft_disable_time: int, personality) -> Alert:
   personality = str(personality).title()
   return NormalPermanentAlert(f"Driving Personality: {personality}", duration=1.5)
-
-
-def invalid_lkas_setting_alert(CP: car.CarParams, CS: car.CarState, sm: messaging.SubMaster, metric: bool, soft_disable_time: int, personality) -> Alert:
-  text = "Toggle stock LKAS on or off to engage"
-  if CP.brand == "tesla":
-    text = "Switch to Traffic-Aware Cruise Control to engage"
-  elif CP.brand == "mazda":
-    text = "Enable your car's LKAS to engage"
-  elif CP.brand == "nissan":
-    text = "Disable your car's stock LKAS to engage"
-  return NormalPermanentAlert("Invalid LKAS setting", text)
-
 
 
 EVENTS: dict[int, dict[str, Alert | AlertCallbackType]] = {
@@ -276,7 +297,7 @@ EVENTS: dict[int, dict[str, Alert | AlertCallbackType]] = {
   },
 
   EventName.invalidLkasSetting: {
-    ET.PERMANENT: invalid_lkas_setting_alert,
+    ET.PERMANENT: NormalPermanentAlert("Invalid LKAS setting", "Toggle stock LKAS on or off to engage"),
     ET.NO_ENTRY: NoEntryAlert("Invalid LKAS setting"),
   },
 
@@ -513,6 +534,16 @@ EVENTS: dict[int, dict[str, Alert | AlertCallbackType]] = {
     ET.USER_DISABLE: EngagementAlert(AudibleAlert.disengage),
   },
 
+  EventName.stockAccStillActive: {
+    ET.USER_DISABLE: EngagementAlert(AudibleAlert.disengage),
+    ET.NO_ENTRY: NoEntryAlert("Cancel Stock ACC to Re-engage"),
+    ET.PERMANENT: Alert(
+      "Stock ACC Cancellation Unconfirmed",
+      "Brake or Cancel Cruise Manually",
+      AlertStatus.userPrompt, AlertSize.mid,
+      Priority.MID, VisualAlert.none, AudibleAlert.prompt, .2),
+  },
+
   EventName.buttonCancel: {
     ET.USER_DISABLE: EngagementAlert(AudibleAlert.disengage),
     ET.NO_ENTRY: NoEntryAlert("Cancel Pressed"),
@@ -640,8 +671,8 @@ EVENTS: dict[int, dict[str, Alert | AlertCallbackType]] = {
   # See https://comma.ai/setup for more information
   EventName.calibrationInvalid: {
     ET.PERMANENT: calibration_invalid_alert,
-    ET.SOFT_DISABLE: soft_disable_alert("Calibration Invalid: Remount Device & Recalibrate"),
-    ET.NO_ENTRY: NoEntryAlert("Calibration Invalid: Remount Device & Recalibrate"),
+    ET.SOFT_DISABLE: calibration_invalid_soft_disable,
+    ET.NO_ENTRY: calibration_invalid_no_entry,
   },
 
   EventName.calibrationIncomplete: {

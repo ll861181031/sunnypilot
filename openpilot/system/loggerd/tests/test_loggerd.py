@@ -9,6 +9,8 @@ from collections.abc import Collection
 from collections import defaultdict
 from pathlib import Path
 
+import pytest
+
 from openpilot.common.parameterized import parameterized
 from openpilot.common.test import OpenpilotTestCase
 import openpilot.cereal.messaging as messaging
@@ -34,7 +36,30 @@ CEREAL_SERVICES = [f for f in log.Event.schema.union_fields if f in SERVICE_LIST
                    and SERVICE_LIST[f].should_log and "encode" not in f.lower()]
 
 
+def _stack_running() -> bool:
+  """Whether a driving stack is already running on this machine.
+
+  loggerd writes into Paths.log_root() and publishes on the shared msgq services, so
+  a stack the user started would race every assertion here: the newest segment might
+  not be the test's, and the test's synthetic messages would be logged by the real
+  loggerd. That is not a failure of the code under test, so skip instead.
+  """
+  for cmdline in Path('/proc').glob('[0-9]*/cmdline'):
+    try:
+      argv = cmdline.read_bytes().replace(b'\x00', b' ').decode('utf-8', 'replace')
+    except OSError:
+      continue
+    if 'manager.py' in argv or 'controlsd' in argv:
+      return True
+  return False
+
+
 class TestLoggerd(OpenpilotTestCase):
+  def setUp(self):
+    if _stack_running():
+      pytest.skip("a driving stack is running; loggerd would share its msgq and log root")
+    super().setUp()
+
   def _get_latest_log_dir(self):
     log_dirs = sorted(Path(Paths.log_root()).iterdir(), key=lambda f: f.stat().st_mtime)
     return log_dirs[-1]
@@ -135,7 +160,8 @@ class TestLoggerd(OpenpilotTestCase):
       # send video
       for stream_type, frame_spec, state in streams:
         dat = np.empty(frame_spec[2], dtype=np.uint8)
-        vipc_server.send(stream_type, dat[:].flatten().tobytes(), n, n / fps, n / fps)
+        timestamp_ns = n * 1_000_000_000 // fps
+        vipc_server.send(stream_type, dat[:].flatten().tobytes(), n, timestamp_ns, timestamp_ns)
 
         camera_state = messaging.new_message(state)
         frame = getattr(camera_state, state)

@@ -1,5 +1,6 @@
 from openpilot.cereal import log
 from openpilot.common.params import Params, UnknownKeyName
+from openpilot.common.camera_config import driver_camera_enabled, DRIVER_CAMERA_PARAMS
 from openpilot.system.ui.widgets import Widget
 from openpilot.system.ui.widgets.list_view import multiple_button_item, toggle_item
 from openpilot.system.ui.widgets.scroller_tici import Scroller
@@ -42,7 +43,7 @@ class TogglesLayout(Widget):
   def __init__(self):
     super().__init__()
     self._params = Params()
-    self._is_release = False  # self._params.get_bool("IsReleaseBranch")
+    self._is_release = self._params.get_bool("IsReleaseBranch") or self._params.get_bool("IsReleaseSpBranch")
 
     # param, title, desc, icon, needs_restart
     self._toggle_defs = {
@@ -95,6 +96,10 @@ class TogglesLayout(Widget):
         False,
       ),
     }
+
+    if not driver_camera_enabled():
+      for param in DRIVER_CAMERA_PARAMS:
+        self._toggle_defs.pop(param, None)
 
     self._long_personality_setting = multiple_button_item(
       lambda: tr("Driving Personality"),
@@ -181,7 +186,6 @@ class TogglesLayout(Widget):
         self._toggles["ExperimentalMode"].action_item.set_enabled(False)
         self._toggles["ExperimentalMode"].action_item.set_state(False)
         self._long_personality_setting.action_item.set_enabled(False)
-        self._params.remove("ExperimentalMode")
 
         unavailable = tr("Experimental mode is currently unavailable on this car since the car's stock ACC is used for longitudinal control.")
 
@@ -237,6 +241,9 @@ class TogglesLayout(Widget):
       self._params.put_bool("ExperimentalMode", state, block=True)
 
   def _toggle_callback(self, state: bool, param: str):
+    if param in DRIVER_CAMERA_PARAMS and not driver_camera_enabled():
+      self._params.put_bool(param, False, block=True)
+      return
     if param == "ExperimentalMode":
       self._handle_experimental_mode_toggle(state)
       return

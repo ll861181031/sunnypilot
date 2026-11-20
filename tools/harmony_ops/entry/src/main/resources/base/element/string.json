@@ -1,0 +1,16 @@
+{
+  "string": [
+    {
+      "name": "module_desc",
+      "value": "车机运维台：抓包工具 / SP 控制台 / DSH"
+    },
+    {
+      "name": "EntryAbility_desc",
+      "value": "车机运维台"
+    },
+    {
+      "name": "EntryAbility_label",
+      "value": "车机运维台"
+    }
+  ]
+}

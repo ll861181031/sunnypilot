@@ -1,0 +1,16 @@
+{
+  "string": [
+    {
+      "name": "module_desc",
+      "value": "CP搭子：连接 Carrot / navipilot 车端"
+    },
+    {
+      "name": "CPlinkAbility_desc",
+      "value": "发现、握手、遥测、导航通道与信号灯"
+    },
+    {
+      "name": "CPlinkAbility_label",
+      "value": "CP搭子"
+    }
+  ]
+}

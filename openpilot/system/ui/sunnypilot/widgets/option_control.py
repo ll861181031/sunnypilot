@@ -36,16 +36,8 @@ class OptionControlSP(ItemAction):
     self.value_map = value_map
     self.label_width = label_width
     self.use_float_scaling = use_float_scaling
-    self.current_value = min_value
+    self.current_value = self._read_value()
     self.label_callback = label_callback
-    if self.value_map:
-      for key in self.value_map:
-        if self.value_map[key] == self.params.get(self.param_key, return_default=True):
-          self.current_value = int(key)
-          break
-    else:
-      value = self.params.get(self.param_key, return_default=True)
-      self.current_value = int(float(value) * 100.0) if self.use_float_scaling else int(value)
 
     # Initialize font and button styles
     self._font = gui_app.font(FontWeight.MEDIUM)
@@ -53,6 +45,16 @@ class OptionControlSP(ItemAction):
     # Layout rectangles for components
     self.minus_btn_rect = rl.Rectangle(0, 0, 0, 0)
     self.plus_btn_rect = rl.Rectangle(0, 0, 0, 0)
+
+  def _read_value(self) -> int:
+    value = self.params.get(self.param_key, return_default=True)
+    if self.value_map:
+      return next((index for index, stored in self.value_map.items() if stored == value), self.min_value)
+    return round(float(value) * 100.0) if self.use_float_scaling else int(value)
+
+  def show_event(self):
+    super().show_event()
+    self.current_value = self._read_value()
 
   def get_value(self) -> int:
     """Get the current value of the control"""
@@ -64,13 +66,14 @@ class OptionControlSP(ItemAction):
       return
     if value == self.current_value:
       return
-    self.current_value = value
     if self.value_map:
-      self.params.put(self.param_key, self.value_map[value])
+      stored = self.value_map[value]
     elif self.use_float_scaling:
-      self.params.put(self.param_key, value / 100.0)
+      stored = value / 100.0
     else:
-      self.params.put(self.param_key, value)
+      stored = value
+    self.params.put(self.param_key, stored, block=True)
+    self.current_value = value
     if self.on_value_changed:
       self.on_value_changed(value)
 

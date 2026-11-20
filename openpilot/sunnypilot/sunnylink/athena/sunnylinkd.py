@@ -15,6 +15,7 @@ import os
 import ssl
 import threading
 import time
+from urllib.parse import urlparse
 
 from functools import partial
 from openpilot.system.athena.rpc import dispatcher
@@ -41,6 +42,7 @@ LOCAL_PORT_WHITELIST = {8022}
 SUNNYLINK_LOG_ATTR_NAME = "user.sunny.upload"
 SUNNYLINK_RECONNECT_TIMEOUT_S = 70  # FYI changing this will also would require a change on sidebar.cc
 DISALLOW_LOG_UPLOAD = threading.Event()
+_settings_revision_lock = threading.Lock()
 
 params = Params()
 
@@ -160,7 +162,10 @@ def sunny_log_handler(end_event: threading.Event, comma_prime_cellular_end_event
 
 @dispatcher.add_method
 def toggleLogUpload(enabled: bool):
-  DISALLOW_LOG_UPLOAD.clear() if enabled and DISALLOW_LOG_UPLOAD.is_set() else DISALLOW_LOG_UPLOAD.set()
+  if enabled:
+    DISALLOW_LOG_UPLOAD.clear()
+  else:
+    DISALLOW_LOG_UPLOAD.set()
 
 
 @dispatcher.add_method
@@ -235,6 +240,8 @@ def getParams(params_keys: list[str], compression: bool = False) -> str | dict[s
 
 @dispatcher.add_method
 def saveParams(params_to_update: dict[str, str], compression: bool = False) -> None:
+  saved = False
+  failed = []
   for key, value in params_to_update.items():
     # disallow modifications to blocked parameters
     if key in BLOCKED_PARAMS:
@@ -243,15 +250,33 @@ def saveParams(params_to_update: dict[str, str], compression: bool = False) -> N
 
     try:
       save_param_from_base64_encoded_string(key, value, compression)
-    except Exception as e:
-      cloudlog.error(f"sunnylinkd.saveParams.exception {e}")
+      saved = True
+    except Exception:
+      failed.append(key)
 
-  # Increment version counter for frontend change detection
-  try:
-    current = int(params.get("ParamsVersion") or "0")
-    params.put("ParamsVersion", str(current + 1), block=True)
-  except Exception:
-    pass
+  if saved:
+    with _settings_revision_lock:
+      store = Params()
+      store.put("ParamsVersion", (store.get("ParamsVersion") or 0) + 1, block=True)
+  if failed:
+    raise ValueError(f"以下参数未保存：{', '.join(failed)}")
+
+
+def _ws_sslopt(uri: str) -> dict:
+  """TLS policy for a WebSocket URI: only loopback may skip certificate checks.
+
+  Substring matching on the whole URI (the old check) treats
+  ``wss://example.com/localhost`` as local and disables verification for a remote
+  peer. Parse the hostname instead.
+  """
+  parsed = urlparse(uri)
+  host = (parsed.hostname or "").lower()
+  if parsed.scheme not in ("ws", "wss"):
+    raise ValueError(f"unsupported websocket scheme: {parsed.scheme!r}")
+  if not host:
+    raise ValueError("websocket URI has no host")
+  local = host in ("localhost", "127.0.0.1", "::1") or host.startswith("127.")
+  return {"cert_reqs": ssl.CERT_NONE if local else ssl.CERT_REQUIRED}
 
 
 def startLocalProxy(global_end_event: threading.Event, remote_ws_uri: str, local_port: int) -> dict[str, int]:
@@ -260,7 +285,8 @@ def startLocalProxy(global_end_event: threading.Event, remote_ws_uri: str, local
 
   cloudlog.debug("athena.startLocalProxy.starting")
   ws = create_connection(
-    remote_ws_uri, header={"Authorization": f"Bearer {sunnylink_api.get_token()}"}, enable_multithread=True, sslopt={"cert_reqs": ssl.CERT_NONE}
+    remote_ws_uri, header={"Authorization": f"Bearer {sunnylink_api.get_token()}"}, enable_multithread=True,
+    sslopt=_ws_sslopt(remote_ws_uri),
   )
 
   return start_local_proxy_shim(global_end_event, local_port, ws)
@@ -295,7 +321,7 @@ def main(exit_event: threading.Event | None = None):
         ws_uri,
         header={"Authorization": f"Bearer {sunnylink_api.get_token()}"},
         enable_multithread=True,
-        sslopt={"cert_reqs": ssl.CERT_NONE if "localhost" in ws_uri else ssl.CERT_REQUIRED},
+        sslopt=_ws_sslopt(ws_uri),
         timeout=SUNNYLINK_RECONNECT_TIMEOUT_S,
       )
       cloudlog.event("sunnylinkd.main.connected_ws", ws_uri=ws_uri, retries=conn_retries,

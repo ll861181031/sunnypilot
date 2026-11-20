@@ -9,10 +9,10 @@ import subprocess
 from panda import Panda, PandaDFU, PandaProtocolMismatch, McuType, FW_PATH
 from openpilot.common.basedir import BASEDIR
 from openpilot.common.params import Params
-from openpilot.common.hardware import HARDWARE
+from openpilot.common.hardware import HARDWARE, PC
 from openpilot.common.swaglog import cloudlog
+from openpilot.selfdrive.pandad import usb_readonly_enabled
 
-from openpilot.sunnypilot.selfdrive.pandad.rivian_long_flasher import flash_rivian_long
 
 
 def get_expected_signature() -> bytes:
@@ -66,17 +66,39 @@ def check_panda_support(panda_serials: list[str]) -> list[str]:
     if serial in spi_serials:
       return [serial]
 
-  for serial in panda_serials:
-    panda = Panda(serial)
-    is_internal = panda.is_internal()
-    panda.close()
-    if is_internal:
-      return [serial]
+  # Do not choose arbitrarily when more than one USB Panda is attached. The
+  # probe below is deliberately read-only, but selecting the wrong adapter
+  # could still put a vehicle bus under control.
+  if len(panda_serials) != 1:
+    return []
+
+  serial = panda_serials[0]
+  context, handle, _, _ = Panda.usb_connect(serial, claim=False, no_error=True)
+  try:
+    if handle is None:
+      return []
+    hw_type = bytes(handle.controlRead(Panda.REQUEST_IN, 0xc1, 0, 0, 1, timeout=1000))
+  except Exception:
+    return []
+  finally:
+    if handle is not None:
+      handle.close()
+    context.close()
+
+  if len(hw_type) != 1:
+    return []
+  if hw_type in Panda.INTERNAL_DEVICES or (PC and hw_type == Panda.HW_TYPE_RED_PANDA):
+    return [serial]
 
   return []
 
 
 def main() -> None:
+  if usb_readonly_enabled():
+    from openpilot.selfdrive.pandad.usb_readonly import main as usb_readonly_main
+    usb_readonly_main()
+    return
+
   # signal pandad to close the relay and exit
   def signal_handler(signum, frame):
     cloudlog.info(f"Caught signal {signum}, exiting")
@@ -118,10 +140,13 @@ def main() -> None:
 
       panda_serials = Panda.list()
       if len(panda_serials):
-        # custom flasher for xnor's Rivian Longitudinal Upgrade Kit
-        flash_rivian_long(panda_serials)
         # find the internal supported panda (e.g. skip external Black Panda)
         panda_serials = check_panda_support(panda_serials)
+
+        if not panda_serials:
+          cloudlog.info("No supported internal Panda detected; waiting for a supported device")
+          time.sleep(1)
+          continue
 
         assert len(panda_serials) == 1
         cloudlog.info(f"{len(panda_serials)} panda found, connecting - {panda_serials}")
@@ -129,7 +154,11 @@ def main() -> None:
 
         # run real pandad
         os.environ['MANAGER_DAEMON'] = 'pandad'
-        process = subprocess.Popen(["./pandad"], cwd=os.path.join(BASEDIR, "openpilot/selfdrive/pandad"))
+        # Hand the validated serial to the daemon: its own Panda::list() is
+        # USB-first, so without this it could open a different panda than the
+        # one check_panda_support() selected (and flash_panda() just flashed).
+        process = subprocess.Popen(["./pandad", panda_serials[0]],
+                                   cwd=os.path.join(BASEDIR, "openpilot/selfdrive/pandad"))
         process.wait()
     # TODO: wrap all panda exceptions in a base panda exception
     except (usb1.USBErrorNoDevice, usb1.USBErrorPipe):

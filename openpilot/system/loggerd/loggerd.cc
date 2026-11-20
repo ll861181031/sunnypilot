@@ -19,6 +19,7 @@ struct LoggerdState {
   std::atomic<int> ready_to_rotate{0};  // count of encoders ready to rotate
   int max_waiting = 0;
   double last_rotate_tms = 0.;      // last rotate time in ms
+  std::unordered_map<std::string, int> encoder_segments;
 };
 
 void logger_rotate(LoggerdState *s) {
@@ -49,7 +50,14 @@ void rotate_if_needed(LoggerdState *s) {
   }
 
   if (all_ready || timed_out) {
-    logger_rotate(s);
+    do {
+      logger_rotate(s);
+      // 断流可能跨过多个完整段；继续推进到各编码器都能写入的时间段。
+      // 只推进一段会让未来段一直排队，直到队列溢出并丢失恢复后的录像。
+      for (const auto &[name, segment] : s->encoder_segments) {
+        if (segment > s->logger.segment()) ++s->ready_to_rotate;
+      }
+    } while (s->max_waiting > 0 && s->ready_to_rotate == s->max_waiting);
   }
 }
 
@@ -129,6 +137,7 @@ int handle_encoder_msg(LoggerdState *s, Message *msg, std::string &name, struct 
     LOGD("%s: has encoderd offset %d", name.c_str(), re.encoderd_segment_offset);
   }
   int offset_segment_num = idx.getSegmentNum() - re.encoderd_segment_offset;
+  s->encoder_segments[name] = offset_segment_num;
 
   if (offset_segment_num == s->logger.segment()) {
     // loggerd is now on the segment that matches this packet

@@ -1,8 +1,10 @@
+import os
+import shutil
+import tempfile
+
 from opendbc.car.car_helpers import interfaces
-from opendbc.car.honda.values import CAR as HONDA
-from opendbc.car.hyundai.values import CAR as HYUNDAI
-from opendbc.car.toyota.values import CAR as TOYOTA
-from openpilot.common.parameterized import parameterized
+from opendbc.car.mock.values import CAR as MOCK
+from openpilot.sunnypilot.selfdrive.controls.lib.nnlc.helpers import MOCK_MODEL_PATH
 from openpilot.common.params import Params
 from openpilot.common.realtime import DT_CTRL
 from openpilot.selfdrive.car.helpers import convert_to_capnp
@@ -13,8 +15,13 @@ from openpilot.common.test import OpenpilotTestCase
 
 class TestNNTorqueModel(OpenpilotTestCase):
 
-  @parameterized.expand([HONDA.HONDA_CIVIC, TOYOTA.TOYOTA_RAV4, HYUNDAI.HYUNDAI_SANTA_CRUZ_1ST_GEN])
-  def test_load_model(self, car_name):
+  def test_load_model(self):
+    car_name = MOCK.MOCK
+    with tempfile.NamedTemporaryFile(prefix="TEST_TORQUE_MODEL_", suffix=".json", delete=False) as model_file:
+      model_path = model_file.name
+    self.addCleanup(os.unlink, model_path)
+    shutil.copyfile(MOCK_MODEL_PATH, model_path)
+
     params = Params()
     params.put_bool("NeuralNetworkLateralControl", True, block=True)
 
@@ -24,6 +31,8 @@ class TestNNTorqueModel(OpenpilotTestCase):
     CI = CarInterface(CP, CP_SP)
 
     sunnypilot_interfaces.setup_interfaces(CI, params)
+    CI.configure_torque_tune(car_name, CP.lateralTuning)
+    CP_SP.neuralNetworkLateralControl.model.path = model_path
 
     CP_SP = convert_to_capnp(CP_SP)
 

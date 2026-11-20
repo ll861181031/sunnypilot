@@ -5,13 +5,13 @@ This file is part of sunnypilot and is licensed under the MIT License.
 See the LICENSE.md file in the root directory for more details.
 """
 from openpilot.selfdrive.ui.layouts.settings.device import DeviceLayout
-from openpilot.selfdrive.ui.onroad.cabin_camera_dialog import CabinCameraDialog
+from openpilot.common.camera_config import driver_camera_available
 from openpilot.selfdrive.ui.ui_state import ui_state
 from openpilot.common.hardware import HARDWARE
 from openpilot.system.ui.lib.application import gui_app
 from openpilot.system.ui.lib.multilang import tr
 from openpilot.system.ui.sunnypilot.widgets.list_view import option_item_sp, multiple_button_item_sp, button_item_sp, \
-  dual_button_item_sp, Spacer
+  dual_button_item_sp, Spacer, toggle_item_sp
 from openpilot.system.ui.widgets import DialogResult
 from openpilot.system.ui.widgets.button import ButtonStyle
 from openpilot.system.ui.widgets.confirm_dialog import alert_dialog, ConfirmDialog
@@ -41,6 +41,12 @@ class DeviceLayoutSP(DeviceLayout):
 
   def _initialize_items(self):
     DeviceLayout._initialize_items(self)
+
+    # Frees the single largest CPU consumer after modeld. Off means no driving video.
+    self._disable_encoderd = toggle_item_sp(
+      title=tr("Disable Recording (encoderd)"),
+      description=tr("Stop the onroad video encoder to free a CPU core. No driving video is written while enabled."),
+      param="DisableEncoderd")
 
     # Using dual button with no right button for better alignment
     self._always_offroad_btn = dual_button_item_sp(
@@ -80,11 +86,14 @@ class DeviceLayoutSP(DeviceLayout):
 
     self._quiet_mode_and_dcam = dual_button_item_sp(
       left_text=lambda: tr("Quiet Mode"),
-      right_text=lambda: tr("Driver Camera Preview"),
+      right_text=(lambda: tr("Driver Camera Preview")) if driver_camera_available() else "",
       left_callback=lambda: ui_state.params.put_bool("QuietMode", not ui_state.params.get_bool("QuietMode")),
-      right_callback=lambda: gui_app.push_widget(CabinCameraDialog())
+      right_callback=self._show_driver_camera if driver_camera_available() else None
     )
     self._quiet_mode_and_dcam.action_item.right_button.set_button_style(ButtonStyle.NORMAL)
+    # Visible and clickable only when the camera actually exists; the base page's own
+    # Driver Camera row is disabled under this UI, so this stays the single entry.
+    self._quiet_mode_and_dcam.action_item.right_button.set_visible(driver_camera_available)
 
     self._reg_and_training = dual_button_item_sp(
       left_text=lambda: tr("Regulatory"),

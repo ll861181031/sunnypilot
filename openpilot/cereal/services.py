@@ -51,6 +51,8 @@ _services: dict[str, tuple] = {
   "procLog": (True, 0.5, 15, QueueSize.BIG),
   "gpsLocationExternal": (True, 10., 10),
   "gpsLocation": (True, 1., 1),
+  "navInstruction": (True, 1., 10),
+  "navRoute": (True, 0., None, QueueSize.BIG),
   "ubloxGnss": (True, 10.),
   "qcomGnss": (True, 2.),
   "clocks": (True, 0.1, 1),
@@ -92,7 +94,14 @@ _services: dict[str, tuple] = {
   "carStateSP": (True, 100., 10),
   "liveMapDataSP": (True, 1., 1),
   "modelDataV2SP": (True, 20., None, QueueSize.BIG),
+  "navMapFrameSP": (True, 20., None, QueueSize.SMALL),
   "liveLocationKalman": (True, 20.),
+  # Optional YOLO detection (fork-local). Not logged: logging it would need a
+  # log.capnp Event field and a loggerd rebuild, and it is informational only.
+  "yoloObjects": (True, 10., None, QueueSize.SMALL),
+  # Optional lane-marking classifier (fork-local). Not logged; consumers treat a
+  # missing service as "no information" rather than "dashed".
+  "laneLineTypes": (False, 2.5, None, QueueSize.SMALL),
 
   # debug
   "uiDebug": (True, 0., 1),

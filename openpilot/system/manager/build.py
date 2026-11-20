@@ -2,6 +2,11 @@
 import os
 import subprocess
 
+# PWD is shell-maintained state and may describe the launcher directory rather
+# than the cwd used by this process. Remove it before importing project code,
+# since cereal/KJ can inspect it during import.
+os.environ.pop("PWD", None)
+
 # NOTE: Do NOT import anything here that needs be built (e.g. params)
 from openpilot.common.basedir import BASEDIR
 from openpilot.common.spinner import Spinner
@@ -20,7 +25,10 @@ def build() -> None:
   compile_output: list[bytes] = []
   for parallelism in ([], ["-j4"], ["-j1"]):
     compile_output.clear()
-    with subprocess.Popen(["scons", *parallelism], cwd=BASEDIR, env={**os.environ, "PWD": BASEDIR}, stderr=subprocess.PIPE) as scons:
+    # Let SCons derive its real cwd instead of inheriting shell-maintained PWD.
+    build_env = os.environ.copy()
+    build_env.pop("PWD", None)
+    with subprocess.Popen(["scons", *parallelism], cwd=BASEDIR, env=build_env, stderr=subprocess.PIPE) as scons:
       assert scons.stderr is not None
 
       # Read progress from stderr and update spinner

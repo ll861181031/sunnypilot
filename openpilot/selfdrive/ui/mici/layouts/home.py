@@ -145,7 +145,6 @@ class MiciHomeLayout(Widget):
     self._chestnut_loading_icon = IconWidget("icons_mici/chestnut.png", (68, 40))
     self._chestnut_failed_icon = IconWidget("icons_mici/chestnut_orange.png", (68, 40))
     self._mic_icon = IconWidget("icons_mici/microphone.png", (32, 46))
-    self._body_icon = IconWidget("icons_mici/body.png", (54, 37))
 
     self._alerts_pill = AlertsPill()
 
@@ -157,7 +156,6 @@ class MiciHomeLayout(Widget):
       self._chestnut_icon,
       self._chestnut_loading_icon,
       self._chestnut_failed_icon,
-      self._body_icon,
       self._mic_icon,
     ], spacing=18)
 
@@ -267,7 +265,6 @@ class MiciHomeLayout(Widget):
       self._chestnut_loading_icon.set_opacity(0.35 + 0.65 * (0.5 - 0.5 * math.cos(rl.get_time() * 6.0)))
       self._chestnut_failed_icon.set_visible(not usb_unknown and chestnut_state in (ChestnutState.UNCOMPILED, ChestnutState.FAILED))
     self._mic_icon.set_visible(ui_state.recording_audio)
-    self._body_icon.set_visible(bool(ui_state.is_body))
 
     footer_rect = rl.Rectangle(self.rect.x + HOME_PADDING, self.rect.y + self.rect.height - 48, self.rect.width - HOME_PADDING, 48)
     self._status_bar_layout.render(footer_rect)

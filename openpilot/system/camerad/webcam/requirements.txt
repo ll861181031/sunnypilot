@@ -1,0 +1,3 @@
+# Desktop webcam dependencies, isolated from the embedded runtime.
+opencv-python-headless==4.11.0.86
+av==13.1.0

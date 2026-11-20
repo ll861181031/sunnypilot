@@ -188,8 +188,11 @@ class DownloadStatusAction(ItemAction):
   def _render_segments(self, rect: rl.Rectangle):
     measured = self._measured_segments()
     while len(self._segment_labels) < len(measured):
+      # elide, do not scroll: a slot name that does not fit used to be cut
+      # mid-word at the scissor edge with no ellipsis, which reads as a broken
+      # row. The full name is one row up (Small/Big Model), so "..." is enough.
       self._segment_labels.append(UnifiedLabelSP("", font_size=FONT_SIZE, max_width=SEGMENT_NAME_MAX_WIDTH,
-                                                 scroll=True, wrap_text=False))
+                                                 scroll=False, wrap_text=False))
     x = rect.x + rect.width - sum(total for _, _, total in measured)
     for i, ((text, color, icon, icon_color), text_width, _) in enumerate(measured):
       if i:

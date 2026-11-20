@@ -117,6 +117,7 @@ struct OnroadEvent @0xc4fa6047f024e718 {
     selfdrivedLagging @81;
     resumeBlocked @82;
     carNotReady @103;
+    stockAccStillActive @104;
     steerTimeLimit @83;
     vehicleSensorsInvalid @84;
     locationdTemporaryError @85;
@@ -572,6 +573,15 @@ struct PandaState @0xa7649e2575e4591e {
   controlsAllowedLateral @38 :Bool;
   controlsAllowedLongitudinal @39 :Bool;
 
+  # Last safety-rejected TX frame, for diagnosis. reason is the byd.h
+  # BYD_TX_BLOCK_* bitmask; data is truncated to the frame length.
+  safetyTxBlockedReason @40 :UInt16;
+  lastTxBlockedAddr @41 :UInt16;
+  lastTxBlockedBus @42 :UInt8;
+  lastTxBlockedLen @43 :UInt8;
+  lastTxBlockedData0 @44 :UInt32;
+  lastTxBlockedData1 @45 :UInt32;
+
   enum FaultStatus {
     none @0;
     faultTemp @1;
@@ -747,6 +757,21 @@ struct RadarState @0x9a185389d6fdd05f {
     modelProb @13 :Float32;  # vision model lead probability
     radar @14 :Bool;  # true if lead is radar-matched (vs vision-only)
     radarTrackId @15 :Int32 = -1;  # for debugging
+    observationState @16 :ObservationState;
+    observationAge @17 :Float32;
+    visionTrackId @18 :UInt32;
+    observationMatched @19 :Bool;
+    releaseReason @20 :Text;
+    dRelStd @21 :Float32;
+    observationShadow @22 :Bool;
+    observationDRel @23 :Float32 = -1;
+
+    enum ObservationState {
+      unknown @0;
+      measured @1;
+      predicted @2;
+      uncertain @3;
+    }
 
     deprecated :group {
       aRel @3 :Float32;
@@ -1237,6 +1262,10 @@ struct LongitudinalPlan @0xe00b5b3eba12876c {
   shouldStop @37: Bool;
   allowThrottle @38: Bool;
   allowBrake @39: Bool;
+  # Predictive acceleration boost actually applied this cycle, m/s^2. Same ordinal as
+  # upstream sunnypilot so logs stay comparable. 0 when the feature is off, when the
+  # car is on stock longitudinal, or when the model wants to brake / is in a curve.
+  accelBoost @40 :Float32;
 
 
   solverExecutionTime @35 :Float32;
@@ -1247,6 +1276,12 @@ struct LongitudinalPlan @0xe00b5b3eba12876c {
     lead1 @2;
     lead2 @3;
     e2e @4;
+    # Fork-local: the car is stopping (or holding) because the traffic light over
+    # its own lane is red or yellow. Separate from e2e so a log shows whether the
+    # brake came from the light or from the driving model.
+    trafficLight @5;
+    turnGuard @6;
+    leadGuard @7;
   }
 
 
@@ -2435,6 +2470,7 @@ struct NavInstruction {
   speedLimitSign @11 :SpeedLimitSign;
 
   allManeuvers @12 :List(Maneuver);
+  routeBinding @13 :Custom.NavRouteBinding;
 
   struct Lane {
     directions @0 :List(Direction);
@@ -2465,10 +2501,18 @@ struct NavInstruction {
 
 struct NavRoute {
   coordinates @0 :List(Coordinate);
+  coordinates64 @1 :List(Coordinate64);
+  routeBinding @2 :Custom.NavRouteBinding;
+  phonePose @3 :Custom.NavPhonePose;
 
   struct Coordinate {
     latitude @0 :Float32;
     longitude @1 :Float32;
+  }
+
+  struct Coordinate64 {
+    latitude @0 :Float64;
+    longitude @1 :Float64;
   }
 }
 
@@ -2652,6 +2696,14 @@ struct Event {
     customReserved17 @143 :Custom.CustomReserved17;
     customReserved18 @144 :Custom.CustomReserved18;
     customReserved19 @145 :Custom.CustomReserved19;
+    # Fork-local YOLO detections. Not logged (services.py sets should_log=False);
+    # the field exists so SubMaster/SERVICE_LIST consumers stay consistent.
+    yoloObjects @153 :Custom.YoloObjects;
+
+    # Fork-local lane-marking types from the optional laned process. Not logged;
+    # the field exists so SubMaster/SERVICE_LIST consumers stay consistent.
+    laneLineTypes @154 :Custom.LaneLineTypes;
+    navMapFrameSP @155 :Custom.NavMapFrameSP;
 
     # *********** legacy + deprecated ***********
     model @9 :Deprecated.ModelData; # TODO: rename modelV2 and mark this as deprecated
@@ -2704,8 +2756,8 @@ struct Event {
     driverMonitoringStateDEPRECATED @71 :DriverMonitoringStateDEPRECATED;
     gpsNMEADEPRECATED @3 :GPSNMEAData;
     uploaderStateDEPRECATED @79 :UploaderState;
-    navInstructionDEPRECATED @82 :NavInstruction;
-    navRouteDEPRECATED @83 :NavRoute;
+    navInstruction @82 :NavInstruction;
+    navRoute @83 :NavRoute;
     navThumbnailDEPRECATED @84 :Thumbnail;
     gnssMeasurementsDEPRECATED @91 :GnssMeasurements;
     mapRenderStateDEPRECATED @105: MapRenderState;

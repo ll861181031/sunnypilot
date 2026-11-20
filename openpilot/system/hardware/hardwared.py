@@ -29,6 +29,7 @@ from openpilot.system.hardware.power_monitoring import PowerMonitoring
 from openpilot.system.hardware.fan_controller import FanController
 from openpilot.system.hardware.chestnut.status import ChestnutStatus
 from openpilot.common.version import terms_version, training_version, get_build_metadata, terms_version_sp
+from openpilot.selfdrive.pandad import usb_readonly_enabled
 
 ThermalStatus = log.DeviceState.ThermalStatus
 NetworkType = log.DeviceState.NetworkType
@@ -204,6 +205,7 @@ def hardware_thread(end_event, hw_queue) -> None:
     "ignition": False,
     "not_onroad_cycle": True,
     "device_temp_good": True,
+    "panda_control_backend": not usb_readonly_enabled(),
   }
   startup_conditions: dict[str, bool] = {}
   startup_conditions_prev: dict[str, bool] = {}
@@ -272,6 +274,10 @@ def hardware_thread(end_event, hw_queue) -> None:
       if onroad_conditions["ignition"]:
         onroad_conditions["ignition"] = False
         cloudlog.error("panda timed out onroad")
+
+    # Bench switch: pretend the car is on without a panda ignition line.
+    if params.get_bool("SimulateIgnition"):
+      onroad_conditions["ignition"] = True
 
     # Run at 2Hz, plus either edge of ignition
     ign_edge = (started_ts is not None) != all(onroad_conditions.values())

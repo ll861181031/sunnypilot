@@ -5,7 +5,6 @@ import uuid
 
 
 from openpilot.common.params import Params
-from openpilot.common.hardware import PC
 from openpilot.common.hardware.hw import Paths
 from openpilot.common.hardware.hw import DEFAULT_DOWNLOAD_CACHE_ROOT
 
@@ -26,19 +25,26 @@ class OpenpilotPrefix:
       self.create_dirs()
 
     if self.shared_download_cache:
+      self.original_cache = os.environ.get("COMMA_CACHE")
       os.environ["COMMA_CACHE"] = DEFAULT_DOWNLOAD_CACHE_ROOT
 
     return self
 
   def __exit__(self, exc_type, exc_obj, exc_tb):
-    if self.clean_dirs_on_exit:
-      self.clean_dirs()
     try:
-      del os.environ['OPENPILOT_PREFIX']
-      if self.original_prefix is not None:
+      if self.clean_dirs_on_exit:
+        os.environ['OPENPILOT_PREFIX'] = self.prefix
+        self.clean_dirs()
+    finally:
+      if self.original_prefix is None:
+        os.environ.pop('OPENPILOT_PREFIX', None)
+      else:
         os.environ['OPENPILOT_PREFIX'] = self.original_prefix
-    except KeyError:
-      pass
+      if self.shared_download_cache:
+        if self.original_cache is None:
+          os.environ.pop("COMMA_CACHE", None)
+        else:
+          os.environ["COMMA_CACHE"] = self.original_cache
     return False
 
   def create_dirs(self):
@@ -54,8 +60,6 @@ class OpenpilotPrefix:
       shutil.rmtree(os.path.realpath(symlink_path), ignore_errors=True)
       os.remove(symlink_path)
     shutil.rmtree(self.msgq_path, ignore_errors=True)
-    if PC:
-      shutil.rmtree(Paths.log_root(), ignore_errors=True)
     if not os.environ.get("COMMA_CACHE", False):
       shutil.rmtree(Paths.download_cache_root(), ignore_errors=True)
     shutil.rmtree(Paths.comma_home(), ignore_errors=True)

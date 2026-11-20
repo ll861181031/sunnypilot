@@ -10,6 +10,7 @@ import pyray as rl
 import threading
 import platform
 import subprocess
+import unicodedata
 from contextlib import contextmanager
 from collections.abc import Callable
 from collections import deque
@@ -32,7 +33,16 @@ MOUSE_THREAD_RATE = 140  # touch controller runs at 140Hz
 MAX_TOUCH_SLOTS = 2
 TOUCH_HISTORY_TIMEOUT = 3.0  # Seconds before touch points fade out
 
-BIG_UI = os.getenv("BIG", "0") == "1"
+# The big UI keeps a fixed 1920x1080 logical canvas on desktop and tici/tizi so
+# layouts do not change with monitor size or inherited environment variables.
+# mici uses its own 536x240 panel size.
+DISPLAY_WIDTH = 1920
+DISPLAY_HEIGHT = 1080
+MICI_DISPLAY_WIDTH = 536
+MICI_DISPLAY_HEIGHT = 240
+# Big UI is the default on the desktop webcam UI and on tici/tizi; mici keeps
+# the compact layout. BIG overrides the default either way.
+BIG_UI = os.getenv("BIG", "1" if HARDWARE.get_device_type() in ("pc", "tici", "tizi") else "0") == "1"
 ENABLE_VSYNC = os.getenv("ENABLE_VSYNC", "0") == "1"
 SHOW_FPS = os.getenv("SHOW_FPS") == "1"
 SHOW_TOUCHES = os.getenv("SHOW_TOUCHES") == "1"
@@ -99,9 +109,31 @@ NOTO_FONTS = {
   "ja": "NotoSansCJKjp-Regular.otf",
   "ko": "NotoSansCJKkr-Regular.otf",
   "th": "NotoSansThai-Regular.ttf",
-  "zh-CHS": "NotoSansCJKsc-Regular.otf",
-  "zh-CHT": "NotoSansCJKtc-Regular.otf",
+  # The bundled Noto CJK files are small subsets intended for the stock
+  # translations. The SP translation set is broader, so use the bundled
+  # Unifont fallback to cover every Chinese glyph without replacement boxes.
+  "zh-CHS": "unifont.otf",
+  "zh-CHT": "unifont.otf",
 }
+
+# Desktop distributions commonly provide a complete Noto CJK font as a TTC
+# collection, while raylib reliably loads individual TTF/OTF files only. A
+# converted user-local OTF can therefore be preferred without making the
+# repository depend on a desktop-only path; devices fall back to the bundled
+# font below.
+LOCAL_CJK_FONT = Path(os.getenv("SUNNYPILOT_CJK_FONT", Path.home() / ".local/share/sunnypilot/fonts/NotoSansCJKsc-Regular.otf"))
+LOCAL_COMPLETE_FONT_DIR = Path(os.getenv("SUNNYPILOT_FONT_DIR", Path.home() / ".local/share/sunnypilot/fonts/complete"))
+
+
+def font_codepoints(chars) -> list[int]:
+  # Raylib handles newlines/tabs as layout controls, not drawable glyphs.
+  # Keep variation selectors: their zero-width glyphs prevent stray question marks.
+  return sorted({ord(char) for char in chars if unicodedata.category(char) != "Cc"})
+
+
+def desktop_font_path(source: Path) -> Path:
+  completed = LOCAL_COMPLETE_FONT_DIR / source.with_suffix(".otf").name
+  return completed if PC and completed.is_file() else source
 
 
 class FontWeight(StrEnum):
@@ -198,6 +230,14 @@ class MouseState:
     #  detect swipe-stop-lift via event gaps instead of the fragile decel heuristic.
     for slot in range(MAX_TOUCH_SLOTS):
       mouse_pos = rl.get_touch_position(slot)
+      # The desktop/GLFW backend never mirrors the mouse into the touch array, so
+      # slot 0 keeps reporting an invalid (-1, -1) position. Every tap then lands
+      # off screen and the whole UI looks dead: the sidebar, the settings page and
+      # Reset Calibration cannot be reached at all. The button flags are fine
+      # (slot 0 is the left mouse button), so only the position is substituted -
+      # a real touch panel reports a valid position and is left untouched.
+      if slot == 0 and (mouse_pos.x < 0 or mouse_pos.y < 0):
+        mouse_pos = rl.get_mouse_position()
       x = mouse_pos.x / self._scale if self._scale != 1.0 else mouse_pos.x
       y = mouse_pos.y / self._scale if self._scale != 1.0 else mouse_pos.y
       ev = MouseEvent(
@@ -225,10 +265,7 @@ class GuiApplication(GuiApplicationExt):
     self._width = width if width is not None else GuiApplication._default_width()
     self._height = height if height is not None else GuiApplication._default_height()
 
-    if PC and os.getenv("SCALE") is None:
-      self._scale = self._calculate_auto_scale()
-    else:
-      self._scale = SCALE
+    self._scale = SCALE
 
     # Scale, then ensure dimensions are even
     self._scaled_width = int(self._width * self._scale)
@@ -300,9 +337,30 @@ class GuiApplication(GuiApplicationExt):
       flags = rl.ConfigFlags.FLAG_MSAA_4X_HINT
       if ENABLE_VSYNC:
         flags |= rl.ConfigFlags.FLAG_VSYNC_HINT
+      # The desktop window manager does not hand the whole screen to a window: with a
+      # dock on the left and a top bar, a 1920x1080 display reports only 1878x1048 of
+      # usable area. A decorated 1920x1080 window therefore cannot fit - measured with
+      # xwininfo it lands at (7, 20) with a 1948x1146 frame, so the right and bottom of
+      # the layout sit off-screen and the UI looks like it is missing content.
+      #
+      # Fullscreen is what pins the client area to exactly the logical canvas the
+      # layouts are drawn against. The alternatives were measured too and do not work:
+      # FLAG_WINDOW_UNDECORATED fixes the size but not the position (21, 32), and
+      # FLAG_BORDERLESS_WINDOWED_MODE had no effect at all under Mutter. The size
+      # requested below already equals the display mode, so no mode switch happens.
+      # Set SUNNYPILOT_UI_WINDOWED=1 to keep a normal window for development. Only the
+      # desktop build needs this; tici/tizi already get it from the compositor, and
+      # mici's 536x240 panel must never be forced fullscreen.
+      if HARDWARE.get_device_type() == 'pc' and os.getenv("SUNNYPILOT_UI_WINDOWED", "0") != "1":
+        flags |= rl.ConfigFlags.FLAG_FULLSCREEN_MODE
       rl.set_config_flags(flags)
 
       rl.init_window(self._scaled_width, self._scaled_height, title)
+      if not rl.is_window_ready():
+        # No GL context exists after a failed InitWindow; even texture setup can
+        # call an uninitialized native function pointer. Exit before any GL work.
+        cloudlog.error("Window initialization failed for %s; exiting before graphics setup", title)
+        raise SystemExit(75)  # EX_TEMPFAIL: let the manager retry when the display recovers.
 
       needs_render_texture = self._scale != 1.0 or BURN_IN_MODE or RECORD
       if self._scale != 1.0:
@@ -711,10 +769,12 @@ class GuiApplication(GuiApplicationExt):
     if language not in self._fallback_fonts:
       chars = set(map(chr, range(32, 127))) | set(EXTRA_FONT_CHARS)
       chars.update(TRANSLATIONS_DIR.joinpath(f"app_{language}.po").read_text(encoding="utf-8"))
-      codepoints = sorted(map(ord, chars))
+      codepoints = font_codepoints(chars)
       codepoint_buffer = rl.ffi.new("int[]", codepoints)
       with as_file(FONT_DIR) as fspath:
-        font = rl.load_font_ex((fspath / NOTO_FONTS[language]).as_posix(), 48,
+        fallback_path = LOCAL_CJK_FONT if language in ("zh-CHS", "zh-CHT") and LOCAL_CJK_FONT.is_file() else fspath / NOTO_FONTS[language]
+        fallback_path = desktop_font_path(fallback_path)
+        font = rl.load_font_ex(fallback_path.as_posix(), 48,
                                rl.ffi.cast("int *", codepoint_buffer), len(codepoints))
       rl.gen_texture_mipmaps(font.texture)
       rl.set_texture_filter(font.texture, rl.TextureFilter.TEXTURE_FILTER_TRILINEAR)
@@ -740,9 +800,9 @@ class GuiApplication(GuiApplicationExt):
     for font_weight_file in FontWeight:
       with as_file(FONT_DIR) as fspath:
         unifont = font_weight_file == FontWeight.UNIFONT
-        codepoints = sorted(map(ord, unifont_chars if unifont else base_chars))
+        codepoints = font_codepoints(unifont_chars if unifont else base_chars)
         codepoint_buffer = rl.ffi.new("int[]", codepoints)
-        font = rl.load_font_ex((fspath / font_weight_file).as_posix(), 16 if unifont else 200,
+        font = rl.load_font_ex(desktop_font_path(fspath / font_weight_file).as_posix(), 16 if unifont else 200,
                                rl.ffi.cast("int *", codepoint_buffer), len(codepoints))
         if font_weight_file != FontWeight.UNIFONT:
           rl.gen_texture_mipmaps(font.texture)
@@ -889,24 +949,16 @@ class GuiApplication(GuiApplicationExt):
     sys.exit(0)
 
   def _calculate_auto_scale(self) -> float:
-     # Create temporary window to query monitor info
-    rl.init_window(1, 1, "")
-    w, h = rl.get_monitor_width(0), rl.get_monitor_height(0)
-    rl.close_window()
-
-    if w == 0 or h == 0 or (w >= self._width and h >= self._height):
-      return 1.0
-
-    # Apply 0.95 factor for window decorations/taskbar margin
-    return max(0.3, min(w / self._width, h / self._height) * 0.95)
+    """Return the fixed display scale used by the vehicle UI."""
+    return SCALE
 
   @staticmethod
   def _default_width() -> int:
-    return 2160 if GuiApplication.big_ui() else 536
+    return DISPLAY_WIDTH if GuiApplication.big_ui() else MICI_DISPLAY_WIDTH
 
   @staticmethod
   def _default_height() -> int:
-    return 1080 if GuiApplication.big_ui() else 240
+    return DISPLAY_HEIGHT if GuiApplication.big_ui() else MICI_DISPLAY_HEIGHT
 
   @staticmethod
   def big_ui() -> bool:

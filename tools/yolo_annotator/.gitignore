@@ -1,0 +1,9 @@
+# runtime artifacts of the labeler (not part of the source tree)
+__pycache__/
+*.pyc
+labeler.log
+sync.log
+sync.json
+dataset_dir.txt
+selftest.png
+*.part

@@ -18,6 +18,11 @@ from openpilot.common.filter_simple import BounceFilter
 from openpilot.common.transformations.camera import DEVICE_CAMERAS, DeviceCameraConfig, view_frame_from_device_frame
 from openpilot.common.transformations.orientation import rot_from_euler
 from enum import IntEnum
+from openpilot.system.ui.lib.multilang import tr
+
+# Unconditional: the camera the screen should show must follow modeld regardless of
+# which UI variant is selected.
+from openpilot.selfdrive.ui.sunnypilot.onroad.wide_camera_indicator import onroad_camera_stream
 
 if gui_app.sunnypilot_ui():
   from openpilot.selfdrive.ui.sunnypilot.mici.onroad.hud_renderer import HudRendererSP as HudRenderer
@@ -34,9 +39,6 @@ class BookmarkState(IntEnum):
   HIDDEN = 0
   DRAGGING = 1
   TRIGGERED = 2
-
-WIDE_CAM_MAX_SPEED = 5.0  # m/s (10 mph)
-ROAD_CAM_MIN_SPEED = 10  # m/s (25 mph)
 
 CAM_Y_OFFSET = 20
 
@@ -156,7 +158,7 @@ class AugmentedRoadView(CameraView):
     self._alert_renderer = AlertRenderer()
     self._driver_state_renderer = DriverStateRenderer()
     self._confidence_ball = ConfidenceBall()
-    self._offroad_label = UnifiedLabel("start the car to\nuse sunnypilot", 54, FontWeight.DISPLAY,
+    self._offroad_label = UnifiedLabel(tr("start the car to\nuse sunnypilot"), 54, FontWeight.DISPLAY,
                                        text_color=rl.Color(255, 255, 255, int(255 * 0.9)),
                                        alignment=TextAlignment.CENTER,
                                        alignment_vertical=TextAlignmentVertical.MIDDLE)
@@ -176,7 +178,7 @@ class AugmentedRoadView(CameraView):
     elif ui_state.ignition and not ui_state.started:
       self._offroad_label.set_text("openpilot can't start\ncheck alerts")
     else:
-      self._offroad_label.set_text("start the car to\nuse sunnypilot")
+      self._offroad_label.set_text(tr("start the car to\nuse sunnypilot"))
 
   def _handle_mouse_release(self, mouse_pos: MousePos):
     # Don't trigger click callback if bookmark was triggered
@@ -249,20 +251,16 @@ class AugmentedRoadView(CameraView):
     self._bookmark_icon.render(self.rect)
 
   def _switch_stream_if_needed(self, sm):
-    if sm['selfdriveState'].experimentalMode and WIDE_CAM in self.available_streams:
-      v_ego = sm['carState'].vEgo
-      if v_ego < WIDE_CAM_MAX_SPEED:
-        target = WIDE_CAM
-      elif v_ego > ROAD_CAM_MIN_SPEED:
-        target = NARROW_ROAD_CAM
-      else:
-        # Hysteresis zone - keep current stream
-        target = self.stream_type
-    else:
-      target = NARROW_ROAD_CAM
-
+    # The road screen draws the main camera: that is the lens the pinhole
+    # intrinsics, the calibration and the model overlay were built for. The wide
+    # camera is only a fallback when the main stream does not exist. The HUD note
+    # follows the stream actually drawn, so a continuous wide model input cannot
+    # leave a permanent WIDE CAM badge over the main view.
+    target = onroad_camera_stream(NARROW_ROAD_CAM in self.available_streams,
+                                  WIDE_CAM in self.available_streams)
     if self.stream_type != target:
       self.switch_stream(target)
+    ui_state.onroad_wide_camera = self.stream_type == WIDE_CAM
 
   def _update_calibration(self):
     # Update device camera if not already set

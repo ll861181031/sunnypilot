@@ -13,6 +13,7 @@ from openpilot.system.ui.widgets.scroller import Scroller
 from openpilot.system.ui.widgets.label import UnifiedLabel
 from openpilot.system.ui.mici_setup import (NetworkSetupPage, FailedPage, NetworkConnectivityMonitor,
                                             GreyBigButton, BigPillButton)
+from openpilot.system.ui.lib.multilang import tr
 
 
 class UpdaterNetworkSetupPage(NetworkSetupPage):
@@ -82,11 +83,11 @@ class Updater(Scroller):
 
     self._failed_page = FailedPage(self._retry, title="update failed")
 
-    self._continue_button = BigPillButton("next")
+    self._continue_button = BigPillButton(tr("next"))
     self._continue_button.set_click_callback(lambda: gui_app.push_widget(self._network_setup_page))
 
     self._scroller.add_widgets([
-      GreyBigButton("update required", "the download size\nis approximately 1 GB",
+      GreyBigButton(tr("update required"), "the download size\nis approximately 1 GB",
                     gui_app.texture("icons_mici/offroad_alerts/green_wheel.png", 64, 64)),
       self._continue_button,
     ])

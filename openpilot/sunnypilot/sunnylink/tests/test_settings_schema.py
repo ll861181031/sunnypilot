@@ -278,23 +278,8 @@ class TestKnownPanels(OpenpilotTestCase):
 
 
 class TestKnownVehicleSettings(OpenpilotTestCase):
-  def test_hyundai_has_longitudinal_tuning(self, schema):
-    keys = {i["key"] for i in _brand_items(schema["vehicle_settings"].get("hyundai"))}
-    assert "HyundaiLongitudinalTuning" in keys
-
-  def test_toyota_has_enforce_stock_and_stop_go(self, schema):
-    keys = {i["key"] for i in _brand_items(schema["vehicle_settings"].get("toyota"))}
-    assert "ToyotaEnforceStockLongitudinal" in keys
-    assert "ToyotaStopAndGoHack" in keys
-
-  def test_tesla_has_coop_steering(self, schema):
-    keys = {i["key"] for i in _brand_items(schema["vehicle_settings"].get("tesla"))}
-    assert "TeslaCoopSteering" in keys
-
-  def test_subaru_has_stop_and_go(self, schema):
-    keys = {i["key"] for i in _brand_items(schema["vehicle_settings"].get("subaru"))}
-    assert "SubaruStopAndGo" in keys
-    assert "SubaruStopAndGoManualParkingBrake" in keys
+  def test_vehicle_settings_has_no_other_platform_specific_items(self, schema):
+    assert schema["vehicle_settings"] == {}
 
 
 class TestItemCompleteness(OpenpilotTestCase):

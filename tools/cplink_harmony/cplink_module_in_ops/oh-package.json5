@@ -1,0 +1,9 @@
+{
+  "name": "cplink",
+  "version": "1.0.0",
+  "description": "CP搭子：Carrot / navipilot 车端客户端（独立入口 HAP）",
+  "main": "",
+  "author": "",
+  "license": "",
+  "dependencies": {}
+}

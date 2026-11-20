@@ -21,6 +21,9 @@ from openpilot.sunnypilot.sunnylink.backups.AESCipher import AESCipher
 from openpilot.common.hardware.hw import Paths
 
 
+BACKUP_MAGIC = b"SPB2"
+
+
 class KeyDerivation:
   @staticmethod
   def _load_key(file_path: str) -> bytes:
@@ -63,6 +66,23 @@ class KeyDerivation:
 
     return key, iv
 
+  @staticmethod
+  def derive_backup_key() -> bytes:
+    """Key for the v2 envelope, derived from the device private key.
+
+    The old path derived key+IV from the PUBLIC key, which every API client can
+    read; that made the backup encryption nominal. The private key never leaves
+    the device, and the IV is random per backup (stored in the envelope).
+    """
+    key_pem = KeyDerivation._load_key(get_key_path(use_aes_256=True))
+    private_key = serialization.load_pem_private_key(key_pem, password=None, backend=default_backend())
+    der = private_key.private_bytes(
+      encoding=serialization.Encoding.DER,
+      format=serialization.PrivateFormat.PKCS8,
+      encryption_algorithm=serialization.NoEncryption(),
+    )
+    return hashlib.sha256(der).digest()
+
 
 def uncompress_dat(data):
   """
@@ -74,8 +94,9 @@ def uncompress_dat(data):
   Returns:
       bytes: Decompressed data
   """
-  data_stripped_4 = data[4:]
-  return zlib.decompress(data_stripped_4)
+  if not data.startswith(b"ZLIB"):
+    raise ValueError("compressed payload has no ZLIB magic")
+  return zlib.decompress(data[4:])
 
 
 def compress_dat(data):
@@ -106,65 +127,41 @@ def get_key_path(use_aes_256=False) -> str:
 
 
 def decrypt_compressed_data(encrypted_base64, use_aes_256=False):
+  """Decrypt and decompress a backup payload.
+
+  Supports the v2 envelope (private-key derivation + random IV) and the legacy
+  v1 format (public-key derivation + fixed IV) so existing backups can still be
+  restored. Failures raise; the manager reports them instead of treating an empty
+  string as a successful restore.
   """
-  Decrypt and decompress data from base64 string.
+  encrypted_data = base64.b64decode(encrypted_base64)
 
-  Args:
-      encrypted_base64 (str): Base64 encoded encrypted data
-      key_path (str, optional): Path to RSA public key
-
-  Returns:
-      str: Decrypted and decompressed string
-  """
-  try:
-    # Decode base64
-    encrypted_data = base64.b64decode(encrypted_base64)
-
-    # Decrypt
+  if encrypted_data.startswith(BACKUP_MAGIC):
+    if len(encrypted_data) < len(BACKUP_MAGIC) + 16:
+      raise ValueError("backup v2 payload is too short")
+    iv = encrypted_data[len(BACKUP_MAGIC):len(BACKUP_MAGIC) + 16]
+    ciphertext = encrypted_data[len(BACKUP_MAGIC) + 16:]
+    key = KeyDerivation.derive_backup_key()
+  else:
+    # Legacy v1: fixed IV and public-key derivation.
     key, iv = KeyDerivation.derive_aes_key_iv(get_key_path(use_aes_256), use_aes_256)
-    cipher = AESCipher(key, iv)
-    decrypted_data = cipher.decrypt(encrypted_data)
+    ciphertext = encrypted_data
 
-    # Decompress
-    decompressed_data = uncompress_dat(decrypted_data)
-
-    # Decode UTF-8
-    result = decompressed_data.decode('utf-8')
-    return result
-  except Exception as e:
-    print(f"Decryption and decompression failed: {e}")
-    return ""
+  decrypted_data = AESCipher(key, iv).decrypt(ciphertext)
+  return uncompress_dat(decrypted_data).decode("utf-8")
 
 
 def encrypt_compressed_data(text, use_aes_256=True):
+  """Compress and encrypt a backup payload into the v2 envelope.
+
+  v2 = b"SPB2" + 16-byte random IV + AES-256-CBC(PKCS#7). The ``use_aes_256``
+  argument is kept for call-site compatibility; v2 always uses AES-256 because the
+  key is now a SHA-256 of private-key material.
   """
-  Compress and encrypt string data to base64.
-
-  Args:
-      text (str): Text to compress and encrypt
-      key_path (str, optional): Path to RSA public key
-
-  Returns:
-      str: Base64 encoded encrypted data
-  """
-  try:
-    # Encode to UTF-8
-    text_bytes = text.encode('utf-8')
-
-    # Compress
-    compressed_data = compress_dat(text_bytes)
-
-    # Encrypt
-    key, iv = KeyDerivation.derive_aes_key_iv(get_key_path(use_aes_256), use_aes_256)
-    cipher = AESCipher(key, iv)
-    encrypted_data = cipher.encrypt(compressed_data)
-
-    # Encode to base64
-    result = base64.b64encode(encrypted_data).decode('utf-8')
-    return result
-  except Exception as e:
-    print(f"Compression and encryption failed: {e}")
-    return ""
+  compressed_data = compress_dat(text.encode("utf-8"))
+  iv = os.urandom(16)
+  ciphertext = AESCipher(KeyDerivation.derive_backup_key(), iv).encrypt(compressed_data)
+  return base64.b64encode(BACKUP_MAGIC + iv + ciphertext).decode("utf-8")
 
 
 def camel_to_snake(name):

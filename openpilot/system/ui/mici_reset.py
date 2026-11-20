@@ -12,6 +12,7 @@ from openpilot.system.ui.lib.application import gui_app
 from openpilot.system.ui.widgets.scroller import Scroller
 from openpilot.system.ui.mici_setup import GreyBigButton, FailedPage
 from openpilot.selfdrive.ui.mici.widgets.dialog import BigDialog, BigConfirmationCircleButton
+from openpilot.system.ui.lib.multilang import tr
 
 USERDATA = "/dev/disk/by-partlabel/userdata"
 TIMEOUT = 3*60
@@ -80,7 +81,7 @@ class Reset(Scroller):
     self._cancel_button.set_visible(mode != ResetMode.RECOVER)
     self._reboot_button.set_visible(mode == ResetMode.RECOVER)
 
-    main_card = GreyBigButton("factory reset", "resetting erases\nall user content & data",
+    main_card = GreyBigButton(tr("factory reset"), "resetting erases\nall user content & data",
                               gui_app.texture("icons_mici/setup/factory_reset.png", 64, 64))
     self._scroller.add_widget(main_card)
 

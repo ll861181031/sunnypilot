@@ -46,37 +46,6 @@
                   "enablement": [
                     {
                       "type": "offroad_only"
-                    },
-                    {
-                      "type": "not",
-                      "condition": {
-                        "type": "any",
-                        "conditions": [
-                          {
-                            "type": "capability",
-                            "field": "brand",
-                            "equals": "rivian"
-                          },
-                          {
-                            "type": "all",
-                            "conditions": [
-                              {
-                                "type": "capability",
-                                "field": "brand",
-                                "equals": "tesla"
-                              },
-                              {
-                                "type": "not",
-                                "condition": {
-                                  "type": "capability",
-                                  "field": "tesla_has_vehicle_bus",
-                                  "equals": true
-                                }
-                              }
-                            ]
-                          }
-                        ]
-                      }
                     }
                   ]
                 },
@@ -88,37 +57,6 @@
                   "enablement": [
                     {
                       "type": "offroad_only"
-                    },
-                    {
-                      "type": "not",
-                      "condition": {
-                        "type": "any",
-                        "conditions": [
-                          {
-                            "type": "capability",
-                            "field": "brand",
-                            "equals": "rivian"
-                          },
-                          {
-                            "type": "all",
-                            "conditions": [
-                              {
-                                "type": "capability",
-                                "field": "brand",
-                                "equals": "tesla"
-                              },
-                              {
-                                "type": "not",
-                                "condition": {
-                                  "type": "capability",
-                                  "field": "tesla_has_vehicle_bus",
-                                  "equals": true
-                                }
-                              }
-                            ]
-                          }
-                        ]
-                      }
                     }
                   ]
                 },
@@ -130,77 +68,11 @@
                   "options": [
                     {
                       "value": 0,
-                      "label": "Remain Active",
-                      "enablement": [
-                        {
-                          "type": "not",
-                          "condition": {
-                            "type": "any",
-                            "conditions": [
-                              {
-                                "type": "capability",
-                                "field": "brand",
-                                "equals": "rivian"
-                              },
-                              {
-                                "type": "all",
-                                "conditions": [
-                                  {
-                                    "type": "capability",
-                                    "field": "brand",
-                                    "equals": "tesla"
-                                  },
-                                  {
-                                    "type": "not",
-                                    "condition": {
-                                      "type": "capability",
-                                      "field": "tesla_has_vehicle_bus",
-                                      "equals": true
-                                    }
-                                  }
-                                ]
-                              }
-                            ]
-                          }
-                        }
-                      ]
+                      "label": "Remain Active"
                     },
                     {
                       "value": 1,
-                      "label": "Pause",
-                      "enablement": [
-                        {
-                          "type": "not",
-                          "condition": {
-                            "type": "any",
-                            "conditions": [
-                              {
-                                "type": "capability",
-                                "field": "brand",
-                                "equals": "rivian"
-                              },
-                              {
-                                "type": "all",
-                                "conditions": [
-                                  {
-                                    "type": "capability",
-                                    "field": "brand",
-                                    "equals": "tesla"
-                                  },
-                                  {
-                                    "type": "not",
-                                    "condition": {
-                                      "type": "capability",
-                                      "field": "tesla_has_vehicle_bus",
-                                      "equals": true
-                                    }
-                                  }
-                                ]
-                              }
-                            ]
-                          }
-                        }
-                      ]
+                      "label": "Pause"
                     },
                     {
                       "value": 2,
@@ -847,32 +719,6 @@
                               "equals": true
                             }
                           ]
-                        },
-                        {
-                          "type": "not",
-                          "condition": {
-                            "type": "capability",
-                            "field": "brand",
-                            "equals": "rivian"
-                          }
-                        },
-                        {
-                          "type": "not",
-                          "condition": {
-                            "type": "all",
-                            "conditions": [
-                              {
-                                "type": "capability",
-                                "field": "brand",
-                                "equals": "tesla"
-                              },
-                              {
-                                "type": "capability",
-                                "field": "is_sp_release",
-                                "equals": true
-                              }
-                            ]
-                          }
                         }
                       ]
                     }
@@ -1047,6 +893,26 @@
                       "equals": true
                     }
                   ]
+                }
+              ]
+            },
+            {
+              "key": "AccelBoostSP",
+              "widget": "toggle",
+              "title": "Acceleration Boost",
+              "description": "Adds a small push on top of sunnypilot's own acceleration while the model predicts no braking, stronger in Aggressive and gentler in Relaxed. Eases off in curves and when sunnypilot slows or stops. Never goes past your set speed, and lead-car following still comes first.",
+              "visibility": [
+                {
+                  "type": "capability",
+                  "field": "has_longitudinal_control",
+                  "equals": true
+                }
+              ],
+              "enablement": [
+                {
+                  "type": "capability",
+                  "field": "has_longitudinal_control",
+                  "equals": true
                 }
               ]
             }
@@ -1945,29 +1811,6 @@
               "description": "Toggle visibility of advanced sunnypilot controls. This only changes the visibility of the toggles; it does not change the actual enabled/disabled state."
             },
             {
-              "key": "EnableGithubRunner",
-              "widget": "toggle",
-              "title": "GitHub Runner Service",
-              "description": "Enables or disables the GitHub runner service.",
-              "visibility": [
-                {
-                  "type": "not",
-                  "condition": {
-                    "type": "capability",
-                    "field": "is_sp_release",
-                    "equals": true
-                  }
-                }
-              ],
-              "enablement": [
-                {
-                  "type": "param",
-                  "key": "ShowAdvancedControls",
-                  "equals": true
-                }
-              ]
-            },
-            {
               "key": "EnableCopyparty",
               "widget": "toggle",
               "title": "copyparty Service",
@@ -2167,176 +2010,5 @@
       ]
     }
   ],
-  "vehicle_settings": {
-    "hyundai": {
-      "title": "Hyundai / Kia / Genesis Settings",
-      "description": "",
-      "items": [
-        {
-          "key": "HyundaiLongitudinalTuning",
-          "widget": "multiple_button",
-          "title": "Custom Longitudinal Tuning",
-          "options": [
-            {
-              "value": 0,
-              "label": "Off"
-            },
-            {
-              "value": 1,
-              "label": "Dynamic"
-            },
-            {
-              "value": 2,
-              "label": "Predictive"
-            }
-          ],
-          "visibility": [
-            {
-              "type": "capability",
-              "field": "hyundai_alpha_long_available",
-              "equals": true
-            }
-          ],
-          "enablement": [
-            {
-              "type": "offroad_only"
-            },
-            {
-              "type": "capability",
-              "field": "has_longitudinal_control",
-              "equals": true
-            }
-          ]
-        }
-      ]
-    },
-    "subaru": {
-      "title": "Subaru Settings",
-      "description": "",
-      "items": [
-        {
-          "key": "SubaruStopAndGo",
-          "widget": "toggle",
-          "title": "Stop and Go (Beta)",
-          "enablement": [
-            {
-              "type": "offroad_only"
-            },
-            {
-              "type": "capability",
-              "field": "has_stop_and_go",
-              "equals": true
-            }
-          ]
-        },
-        {
-          "key": "SubaruStopAndGoManualParkingBrake",
-          "widget": "toggle",
-          "title": "Stop and Go for Manual Parking Brake (Beta)",
-          "enablement": [
-            {
-              "type": "offroad_only"
-            },
-            {
-              "type": "capability",
-              "field": "has_stop_and_go",
-              "equals": true
-            }
-          ]
-        }
-      ]
-    },
-    "tesla": {
-      "title": "Tesla Settings",
-      "description": "",
-      "items": [
-        {
-          "key": "TeslaCoopSteering",
-          "widget": "toggle",
-          "title": "Cooperative Steering (Beta)",
-          "enablement": [
-            {
-              "type": "offroad_only"
-            }
-          ]
-        },
-        {
-          "key": "TeslaMadsScreenButton",
-          "widget": "multiple_button",
-          "title": "MADS Screen Activation",
-          "description": "Use a multi-finger press on the infotainment screen to toggle MADS. This allows the use of full MADS functionality when enabled. Selecting a higher finger count may reduce accidental activations. Note: Setting this to Off will reset your MADS settings to default.",
-          "options": [
-            {
-              "value": 0,
-              "label": "Off"
-            },
-            {
-              "value": 1,
-              "label": "3-Finger"
-            },
-            {
-              "value": 2,
-              "label": "4-Finger"
-            },
-            {
-              "value": 3,
-              "label": "5-Finger"
-            }
-          ],
-          "visibility": [
-            {
-              "type": "capability",
-              "field": "tesla_has_vehicle_bus",
-              "equals": true
-            }
-          ],
-          "enablement": [
-            {
-              "type": "offroad_only"
-            }
-          ]
-        }
-      ]
-    },
-    "toyota": {
-      "title": "Toyota / Lexus Settings",
-      "description": "",
-      "items": [
-        {
-          "key": "ToyotaEnforceStockLongitudinal",
-          "widget": "toggle",
-          "needs_onroad_cycle": true,
-          "title": "Enforce Factory Longitudinal Control",
-          "description": "sunnypilot will not take over control of gas and brakes. Factory Toyota longitudinal control will be used.",
-          "enablement": [
-            {
-              "type": "not_engaged"
-            }
-          ]
-        },
-        {
-          "key": "ToyotaStopAndGoHack",
-          "widget": "toggle",
-          "needs_onroad_cycle": true,
-          "title": "Stop and Go Hack (Alpha)",
-          "description": "sunnypilot will allow some Toyota/Lexus cars to auto resume during stop and go traffic. This feature is only applicable to certain models that are able to use longitudinal control. This is an alpha feature. Use at your own risk.",
-          "enablement": [
-            {
-              "type": "not_engaged"
-            },
-            {
-              "type": "capability",
-              "field": "has_longitudinal_control",
-              "equals": true
-            },
-            {
-              "type": "param",
-              "key": "ToyotaEnforceStockLongitudinal",
-              "equals": false
-            }
-          ]
-        }
-      ]
-    }
-  }
+  "vehicle_settings": {}
 }

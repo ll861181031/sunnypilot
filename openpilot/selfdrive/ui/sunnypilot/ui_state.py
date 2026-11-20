@@ -20,6 +20,11 @@ MADSState = custom.ModularAssistiveDrivingSystem.ModularAssistiveDrivingSystemSt
 
 ONROAD_BRIGHTNESS_TIMER_PAUSED = -1
 
+# Runners that actually load a Blendful-enabled modeld. This fork wires Blendful into
+# both the stock runner (openpilot/selfdrive/modeld) and the tinygrad runner
+# (sunnypilot/modeld_v2), unlike upstream where only tinygrad has it.
+BLENDFUL_RUNNERS = (custom.ModelManagerSP.Runner.stock, custom.ModelManagerSP.Runner.tinygrad)
+
 
 class OnroadTimerStatus(Enum):
   NONE = 0
@@ -35,7 +40,11 @@ class UIStateSP:
     self.is_sp_release: bool = self.params.get_bool("IsReleaseSpBranch")
     self.sm_services_ext = [
       "modelManagerSP", "selfdriveStateSP", "longitudinalPlanSP", "backupManagerSP",
-      "gpsLocation", "lateralTorqueParameters", "carStateSP", "liveMapDataSP", "carParamsSP", "lateralDelay"
+      "gpsLocation", "lateralTorqueParameters", "carStateSP", "liveMapDataSP", "carParamsSP", "lateralDelay",
+      # modeld publishes the Blendful telemetry here; the onroad renderer draws the
+      # lane-centre overlay from it. Subscribing to a service nobody publishes is
+      # harmless (the message just never arrives).
+      "modelDataV2SP",
     ]
 
     self.sunnylink_state = SunnylinkState()
@@ -45,6 +54,10 @@ class UIStateSP:
 
     self.active_bundle = None
     self.model_runner_tinygrad: bool = False
+    # Which runner the manager actually launches (process_config.is_tinygrad_model).
+    # Distinct from model_runner_tinygrad, which only looks at the selected bundle.
+    self.active_runner: int = custom.ModelManagerSP.Runner.stock
+    self.active_runner_tinygrad: bool = False
     self.blindspot: bool = False
     self.chevron_metrics = None
     self.custom_interactive_timeout: int = 0
@@ -109,6 +122,28 @@ class UIStateSP:
     return self.onroad_brightness in (OnroadBrightness.AUTO, OnroadBrightness.AUTO_DARK)
 
   @staticmethod
+  def lateral_active(_ui_state) -> bool:
+    """Lateral is doing the steering right now, so a lateral-only overlay applies."""
+    if _ui_state.sm.valid["selfdriveStateSP"]:
+      mads = _ui_state.sm["selfdriveStateSP"].mads
+      if mads.available:
+        return mads.enabled and mads.state != MADSState.paused
+    return _ui_state.status.value in ("engaged", "lat_only")
+
+  def blendful_supported(self) -> bool:
+    """Whether the runner the manager launched has Blendful wired into it.
+
+    Upstream gates Blendful on `active_runner_tinygrad` because Blendful only exists in
+    modeld_v2 there. This fork wires the same Blendful.update() into both
+    openpilot.selfdrive.modeld.modeld (stock runner) and sunnypilot/modeld_v2/modeld
+    (tinygrad runner), so gating on tinygrad alone would grey the toggle out on a car
+    running the stock runner -- which is the normal case here (ModelRunnerTypeCache
+    reads 2 == Runner.stock on this machine). Only snpe, where neither modeld process
+    runs, genuinely cannot use it.
+    """
+    return self.active_runner in BLENDFUL_RUNNERS
+
+  @staticmethod
   def update_status(ss, ss_sp, onroad_evt) -> str:
     state = ss.state
     mads = ss_sp.mads
@@ -156,6 +191,14 @@ class UIStateSP:
                                chestnut_loading=self.chestnut_loading, offroad=self.is_offroad())
     self.active_bundle = self.params.get(ACTIVE_BUNDLE_KEYS[source])
     self.model_runner_tinygrad = self.active_bundle is not None and self.active_bundle.get("runner") == "tinygrad"
+    # Runner the manager actually launches (process_config.is_tinygrad_model / is_stock_model).
+    # With a chestnut slot present the big slot decides, so this is not derivable from the
+    # selected bundle alone. Upstream only keeps the tinygrad boolean; the raw value is kept
+    # here too because this fork wires Blendful into the stock runner as well, and the
+    # settings page needs to know which runner is live rather than just "is it tinygrad".
+    runner = self.params.get("ModelRunnerTypeCache")
+    self.active_runner = int(custom.ModelManagerSP.Runner.stock if runner is None else runner)
+    self.active_runner_tinygrad = self.active_runner == custom.ModelManagerSP.Runner.tinygrad
     # stock only counts the default big model's compiled pkl. a downloaded big bundle runs on the
     # chestnut just the same, so ChestnutState has to see it as available too.
     self.chestnut_compiled = self.chestnut_compiled or self.model_runner_tinygrad
@@ -192,6 +235,14 @@ class UIStateSP:
     has_long = self.has_longitudinal_control
     CP = self.CP
 
+    # 启动时尚无车型参数，不代表车型不支持；保留驾驶员上次的选择。
+    if self.is_release or (CP is not None and CP.brand != "mock" and not CP.alphaLongitudinalAvailable):
+      self.params.remove("AlphaLongitudinalEnabled")
+
+    if CP is not None and CP.brand == "mock":
+      self.has_icbm = False
+      return
+
     if CP is not None:
       if self.params.get_bool("EnforceTorqueControl") and self.params.get_bool("NeuralNetworkLateralControl"):
         self.params.put_bool("EnforceTorqueControl", False, block=True)
@@ -207,36 +258,24 @@ class UIStateSP:
         self.params.remove("NeuralNetworkLateralControl")
         self.params.remove("LateralJerkTorqueController")
 
-      # Alpha longitudinal: clear if not available
-      if not CP.alphaLongitudinalAvailable:
-        self.params.remove("AlphaLongitudinalEnabled")
-
       # BSM not available: clear BSM-dependent settings
       if not CP.enableBsm:
         self.params.remove("AutoLaneChangeBsmDelay")
-    else:
-      # No CarParams: clear all car-dependent params as safety default
-      self.params.remove("EnforceTorqueControl")
-      self.params.remove("NeuralNetworkLateralControl")
-      self.params.remove("LateralJerkTorqueController")
-      self.params.remove("AlphaLongitudinalEnabled")
 
     # No longitudinal control: no experimental mode or DEC
-    if not has_long:
+    if CP is not None and not has_long:
       self.params.remove("ExperimentalMode")
       self.params.remove("DynamicExperimentalControl")
 
     # ICBM: clear if not available or if full longitudinal control is active
-    if self.CP_SP is not None:
-      if not self.CP_SP.intelligentCruiseButtonManagementAvailable or has_long:
-        self.params.remove("IntelligentCruiseButtonManagement")
-        self.has_icbm = False
-    else:
+    if has_long or (self.CP_SP is not None and not self.CP_SP.intelligentCruiseButtonManagementAvailable):
       self.params.remove("IntelligentCruiseButtonManagement")
+      self.has_icbm = False
+    elif self.CP_SP is None or CP is None:
       self.has_icbm = False
 
     # Cruise features requiring longitudinal or ICBM
-    if not (has_long or self.has_icbm):
+    if CP is not None and self.CP_SP is not None and not (has_long or self.has_icbm):
       self.params.remove("CustomAccIncrementsEnabled")
       self.params.remove("SmartCruiseControlVision")
       self.params.remove("SmartCruiseControlMap")

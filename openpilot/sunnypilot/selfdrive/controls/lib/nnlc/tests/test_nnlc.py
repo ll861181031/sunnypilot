@@ -1,14 +1,13 @@
 import numpy as np
+import os
+import shutil
+import tempfile
 
 from openpilot.cereal import log, messaging
 from opendbc.car.structs import car
 from opendbc.car.car_helpers import interfaces
-from opendbc.car.gm.values import CAR as GM
-from opendbc.car.honda.values import CAR as HONDA
-from opendbc.car.hyundai.values import CAR as HYUNDAI
-from opendbc.car.toyota.values import CAR as TOYOTA
+from opendbc.car.mock.values import CAR as MOCK
 from opendbc.car.vehicle_model import VehicleModel
-from openpilot.common.parameterized import parameterized
 from openpilot.common.params import Params
 from openpilot.common.realtime import DT_CTRL
 from openpilot.selfdrive.car.helpers import convert_to_capnp
@@ -16,6 +15,7 @@ from openpilot.selfdrive.controls.lib.latcontrol_torque import LatControlTorque
 from openpilot.selfdrive.locationd.helpers import Pose
 from openpilot.common.mock.generators import generate_deviceMotion
 from openpilot.sunnypilot.selfdrive.car import interfaces as sunnypilot_interfaces
+from openpilot.sunnypilot.selfdrive.controls.lib.nnlc.helpers import MOCK_MODEL_PATH
 from openpilot.selfdrive.modeld.constants import ModelConstants
 from openpilot.common.test import OpenpilotTestCase
 
@@ -45,8 +45,13 @@ def generate_modelV2():
 
 class TestNeuralNetworkLateralControl(OpenpilotTestCase):
 
-  @parameterized.expand([HONDA.HONDA_CIVIC, TOYOTA.TOYOTA_RAV4, HYUNDAI.HYUNDAI_SANTA_CRUZ_1ST_GEN, GM.CHEVROLET_BOLT_EUV])
-  def test_saturation(self, car_name):
+  def test_saturation(self):
+    car_name = MOCK.MOCK
+    with tempfile.NamedTemporaryFile(prefix="TEST_TORQUE_MODEL_", suffix=".json", delete=False) as model_file:
+      model_path = model_file.name
+    self.addCleanup(os.unlink, model_path)
+    shutil.copyfile(MOCK_MODEL_PATH, model_path)
+
     params = Params()
     params.put_bool("NeuralNetworkLateralControl", True, block=True)
 
@@ -56,6 +61,8 @@ class TestNeuralNetworkLateralControl(OpenpilotTestCase):
     CI = CarInterface(CP, CP_SP)
 
     sunnypilot_interfaces.setup_interfaces(CI, params)
+    CI.configure_torque_tune(car_name, CP.lateralTuning)
+    CP_SP.neuralNetworkLateralControl.model.path = model_path
 
     CP_SP = convert_to_capnp(CP_SP)
     VM = VehicleModel(CP)

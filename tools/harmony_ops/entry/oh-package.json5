@@ -1,0 +1,9 @@
+{
+  "name": "entry",
+  "version": "1.0.0",
+  "description": "Entry HAP: 抓包工具 / SP 控制台 / DSH 三个服务",
+  "main": "",
+  "author": "",
+  "license": "",
+  "dependencies": {}
+}

@@ -125,19 +125,7 @@ class SpeedLimitSettingsLayout(Widget):
 
     speed_limit_mode_param = ui_state.params.get("SpeedLimitMode", return_default=True)
     if ui_state.CP is not None and ui_state.CP_SP is not None:
-      brand = ui_state.CP.brand
-      has_long = ui_state.has_longitudinal_control
-      has_icbm = ui_state.has_icbm
-
-      """
-          Speed Limit Assist is available when:
-          - has_long or has_icbm, and
-          - is not a release branch or not a disallowed brand, and
-          - is not always disallwed
-      """
-      sla_disallow_in_release = brand == "tesla" and ui_state.is_sp_release
-      sla_always_disallow = brand == "rivian"
-      sla_available = (has_long or has_icbm) and not sla_disallow_in_release and not sla_always_disallow
+      sla_available = ui_state.has_longitudinal_control or ui_state.has_icbm
 
       if not sla_available and speed_limit_mode_param == int(SpeedLimitMode.assist):
         ui_state.params.put("SpeedLimitMode", int(SpeedLimitMode.warning))

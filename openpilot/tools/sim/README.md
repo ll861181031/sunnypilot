@@ -23,18 +23,13 @@ options:
   --dual_camera
 ```
 
-#### Bridge Controls:
-- To engage openpilot press 2, then press 1 to increase the speed and 2 to decrease.
-- To disengage, press "S" (simulates a user brake)
+此分支仅支持手动驾驶与传感器模拟，使用无输出的 `MOCK` 接口。没有经过验证的宋 PLUS DM-i ALT 闭环模拟车，不生成该车型的 CAN 数据。
 
 #### All inputs:
 
 ```
 | key  |   functionality       |
 |------|-----------------------|
-|  1   | Cruise Resume / Accel |
-|  2   | Cruise Set    / Decel |
-|  3   | Cruise Cancel         |
 |  r   | Reset Simulation      |
 |  i   | Toggle Ignition       |
 |  q   | Exit all              |

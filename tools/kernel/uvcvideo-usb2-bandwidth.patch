@@ -1,0 +1,67 @@
+--- a/uvc_video.c
++++ b/uvc_video.c
+@@ -160,6 +160,44 @@
+ 	USB_DEVICE(0x0fd9, 0x0066)
+ };
+ 
++/*
++ * Some UVC cameras advertise a payload size for MJPEG 1080p that reserves the
++ * whole USB 2.0 isochronous budget, even though they emit small fixed-size
++ * frames (measured: 254 KiB/frame at 20 fps = 4.9 MB/s). Two such cameras then
++ * cannot stream on the same 480 Mbit bus: the second VIDIOC_REQBUFS fails with
++ * ENOSPC. Cap the requested payload for compressed formats on these devices so
++ * the driver picks a smaller alternate setting. 1024/1536 bytes per service
++ * interval is 8.2/12.3 MB/s at high speed, still above the measured bitrate.
++ *
++ * This is a local build, not upstream material. The IDs are:
++ *   1bcf:2cd1 - DECXIN wide camera
++ *   0bda:5161 - RYS RGB narrow camera
++ */
++struct uvc_bw_cap {
++	__u16 idVendor;
++	__u16 idProduct;
++	__u16 max_payload;
++};
++
++static const struct uvc_bw_cap uvc_bw_caps[] = {
++	{ 0x1bcf, 0x2cd1, 1024 },
++	{ 0x0bda, 0x5161, 1536 },
++};
++
++static u16 uvc_bandwidth_cap(struct uvc_streaming *stream)
++{
++	const struct usb_device_descriptor *desc = &stream->dev->udev->descriptor;
++	unsigned int i;
++
++	for (i = 0; i < ARRAY_SIZE(uvc_bw_caps); ++i) {
++		if (uvc_bw_caps[i].idVendor == le16_to_cpu(desc->idVendor) &&
++		    uvc_bw_caps[i].idProduct == le16_to_cpu(desc->idProduct))
++			return uvc_bw_caps[i].max_payload;
++	}
++
++	return 0;
++}
++
+ static void uvc_fixup_video_ctrl(struct uvc_streaming *stream,
+ 	struct uvc_streaming_control *ctrl)
+ {
+@@ -271,6 +309,19 @@
+ 				     stream->maxpsize);
+ 		ctrl->dwMaxPayloadTransferSize = stream->maxpsize;
+ 	}
++
++	if ((format->flags & UVC_FMT_FLAG_COMPRESSED) &&
++	    frame->wWidth == 1920 && frame->wHeight == 1080 &&
++	    stream->intf->num_altsetting > 1) {
++		u16 cap = uvc_bandwidth_cap(stream);
++
++		if (cap && ctrl->dwMaxPayloadTransferSize > cap) {
++			dev_info(&stream->intf->dev,
++				 "Capping compressed payload %u -> %u B/interval for USB2 coexistence\n",
++				 ctrl->dwMaxPayloadTransferSize, cap);
++			ctrl->dwMaxPayloadTransferSize = cap;
++		}
++	}
+ }
+ 
+ static size_t uvc_video_ctrl_size(struct uvc_streaming *stream)

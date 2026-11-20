@@ -123,6 +123,12 @@ void fill_panda_state(cereal::PandaState::Builder &ps, cereal::PandaState::Panda
   ps.setUptime(health.uptime_pkt);
   ps.setSafetyTxBlocked(health.safety_tx_blocked_pkt);
   ps.setSafetyRxInvalid(health.safety_rx_invalid_pkt);
+  ps.setSafetyTxBlockedReason(health.safety_tx_blocked_reason_pkt);
+  ps.setLastTxBlockedAddr(health.last_tx_blocked_addr_pkt);
+  ps.setLastTxBlockedBus(health.last_tx_blocked_bus_pkt);
+  ps.setLastTxBlockedLen(health.last_tx_blocked_len_pkt);
+  ps.setLastTxBlockedData0(health.last_tx_blocked_data0_pkt);
+  ps.setLastTxBlockedData1(health.last_tx_blocked_data1_pkt);
   ps.setIgnitionLine((health.flags_pkt & HEALTH_FLAG_IGNITION_LINE) != 0U);
   ps.setIgnitionCan((health.flags_pkt & HEALTH_FLAG_IGNITION_CAN) != 0U);
   ps.setControlsAllowed((health.flags_pkt & HEALTH_FLAG_CONTROLS_ALLOWED) != 0U);
@@ -415,14 +421,17 @@ void pandad_run(Panda *panda) {
       send_peripheral_state(panda, &pm);
     }
 
-    // Forward logs from panda to cloudlog if available
-    std::string log = panda->serial_read();
-    if (!log.empty()) {
-      if (log.find("Register 0x") != std::string::npos) {
-        // Log register divergent faults as errors
-        LOGE("%s", log.c_str());
-      } else {
-        LOGD("%s", log.c_str());
+    // Forward logs from panda to cloudlog if available. The USB control
+    // transfer contends with the CAN receive path; 10 Hz is plenty for logs.
+    if (rk.frame() % 10 == 0) {
+      std::string log = panda->serial_read();
+      if (!log.empty()) {
+        if (log.find("Register 0x") != std::string::npos) {
+          // Log register divergent faults as errors
+          LOGE("%s", log.c_str());
+        } else {
+          LOGD("%s", log.c_str());
+        }
       }
     }
 

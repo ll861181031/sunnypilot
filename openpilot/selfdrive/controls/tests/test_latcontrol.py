@@ -4,10 +4,8 @@ from openpilot.common.parameterized import parameterized
 from openpilot.cereal import log
 from opendbc.car.structs import car
 from opendbc.car.car_helpers import interfaces
-from opendbc.car.honda.values import CAR as HONDA
-from opendbc.car.toyota.values import CAR as TOYOTA
-from opendbc.car.nissan.values import CAR as NISSAN
-from opendbc.car.gm.values import CAR as GM
+from opendbc.car.byd.values import CAR as BYD
+from opendbc.car.mock.values import CAR as MOCK
 from opendbc.car.vehicle_model import VehicleModel
 from openpilot.common.realtime import DT_CTRL
 from openpilot.selfdrive.car.helpers import convert_to_capnp
@@ -21,14 +19,17 @@ from openpilot.sunnypilot.selfdrive.car import interfaces as sunnypilot_interfac
 
 class TestLatControl(OpenpilotTestCase):
 
-  @parameterized.expand([(HONDA.HONDA_CIVIC, LatControlPID), (TOYOTA.TOYOTA_RAV4, LatControlTorque),
-                         (NISSAN.NISSAN_LEAF, LatControlAngle), (GM.CHEVROLET_BOLT_EUV, LatControlTorque)])
+  @parameterized.expand([(MOCK.MOCK, LatControlPID), (MOCK.MOCK, LatControlTorque), (BYD.BYD_SONG_PLUS_DMI_23_ALT, LatControlAngle)])
   def test_saturation(self, car_name, controller):
     CarInterface = interfaces[car_name]
     CP = CarInterface.get_non_essential_params(car_name)
     CP_SP = CarInterface.get_non_essential_params_sp(CP, car_name)
     CI = CarInterface(CP, CP_SP)
     sunnypilot_interfaces.setup_interfaces(CI)
+    if controller is LatControlTorque:
+      CI.configure_torque_tune(car_name, CP.lateralTuning)
+    elif controller is LatControlPID:
+      CP.lateralTuning.pid.kpV = [1.0]
     CP_SP = convert_to_capnp(CP_SP)
     VM = VehicleModel(CP)
 

@@ -4,7 +4,7 @@ from openpilot.common.parameterized import parameterized
 from openpilot.cereal import log
 from opendbc.car.structs import car
 from opendbc.car.car_helpers import interfaces
-from opendbc.car.toyota.values import CAR as TOYOTA
+from opendbc.car.mock.values import CAR as MOCK
 from opendbc.car.vehicle_model import VehicleModel
 from openpilot.common.realtime import DT_CTRL
 from openpilot.selfdrive.controls.lib.latcontrol_torque import LatControlTorque, LAT_ACCEL_REQUEST_BUFFER_SECONDS
@@ -20,6 +20,7 @@ def get_controller(car_name):
   CP_SP = CarInterface.get_non_essential_params_sp(CP, car_name)
   CI = CarInterface(CP, CP_SP)
   sunnypilot_interfaces.setup_interfaces(CI)
+  CI.configure_torque_tune(car_name, CP.lateralTuning)
   CP_SP = convert_to_capnp(CP_SP)
   VM = VehicleModel(CP)
   controller = LatControlTorque(CP.as_reader(), CP_SP.as_reader(), CI, DT_CTRL)
@@ -27,7 +28,7 @@ def get_controller(car_name):
 
 class TestLatControlTorqueBuffer(OpenpilotTestCase):
 
-  @parameterized.expand([(TOYOTA.TOYOTA_COROLLA_TSS2,)])
+  @parameterized.expand([(MOCK.MOCK,)])
   def test_request_buffer_consistency(self, car_name):
     buffer_steps = int(LAT_ACCEL_REQUEST_BUFFER_SECONDS / DT_CTRL)
     controller, VM = get_controller(car_name)

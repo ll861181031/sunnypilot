@@ -1,0 +1,72 @@
+{
+  "skills": [
+    {
+      "id": "echo",
+      "name": "Echo",
+      "description": "Returns the input message unchanged. Useful for testing.",
+      "policy": "auto",
+      "parameters": [
+        {
+          "name": "message",
+          "type": "string",
+          "description": "Message to echo",
+          "required": true
+        }
+      ],
+      "metadata": {},
+      "scope": "global",
+      "version": "1.0.0",
+      "capabilities": [
+        "io"
+      ],
+      "dependencies": [],
+      "source": "builtin:core",
+      "rank": 600,
+      "invocationPolicy": {
+        "modelInvocable": true,
+        "userInvocable": true
+      }
+    },
+    {
+      "id": "get_time",
+      "name": "Get time",
+      "description": "Returns current local time.",
+      "policy": "auto",
+      "parameters": [],
+      "metadata": {},
+      "scope": "global",
+      "version": "1.0.0",
+      "capabilities": [
+        "time"
+      ],
+      "dependencies": [],
+      "source": "builtin:core",
+      "rank": 600,
+      "invocationPolicy": {
+        "modelInvocable": true,
+        "userInvocable": true
+      }
+    },
+    {
+      "id": "workspace_summary",
+      "name": "Workspace summary",
+      "description": "Returns AI workspace path summary.",
+      "policy": "auto",
+      "parameters": [],
+      "metadata": {},
+      "scope": "global",
+      "version": "1.0.0",
+      "capabilities": [
+        "fs",
+        "diagnostics"
+      ],
+      "dependencies": [],
+      "source": "builtin:core",
+      "rank": 600,
+      "invocationPolicy": {
+        "modelInvocable": true,
+        "userInvocable": true
+      }
+    }
+  ]
+}

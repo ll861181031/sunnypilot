@@ -4,8 +4,26 @@ Copyright (c) 2021-, Haibin Wen, sunnypilot, and a number of other contributors.
 This file is part of sunnypilot and is licensed under the MIT License.
 See the LICENSE.md file in the root directory for more details.
 """
+import base64
+import datetime
+
+from openpilot.common.params import Params
 from openpilot.sunnypilot.sunnylink.athena import sunnylinkd
 from openpilot.common.test import OpenpilotTestCase
+
+
+def test_remote_save_updates_revision_only_for_applied_writes(tmp_path, monkeypatch):
+  monkeypatch.setenv("PARAMS_ROOT", str(tmp_path))
+  p = Params()
+  monkeypatch.setattr(sunnylinkd, "params", p)
+  p.put("ParamsVersion", 7, block=True)
+  sunnylinkd.saveParams({"GithubUsername": "ignored"})
+  assert p.get("ParamsVersion") == 7
+  stamp = datetime.datetime(2026, 1, 1, tzinfo=datetime.UTC)
+  sunnylinkd.saveParams({"IsMetric": "MQ==", "LastUpdateTime": base64.b64encode(stamp.isoformat().encode()).decode()})
+  assert p.get("LastUpdateTime") == stamp
+  assert p.get_bool("IsMetric")
+  assert p.get("ParamsVersion") == 8
 
 
 class TestSunnylinkdMethods(OpenpilotTestCase):

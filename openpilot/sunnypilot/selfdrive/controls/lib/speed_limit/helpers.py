@@ -27,16 +27,7 @@ def set_speed_limit_assist_availability(CP: car.CarParams, CP_SP: custom.CarPara
   if params is None:
     params = Params()
 
-  is_release = params.get_bool("IsReleaseSpBranch")
-  disallow_in_release = CP.brand == "tesla" and is_release
-  always_disallow = CP.brand == "rivian"
-  allowed = True
-
-  if disallow_in_release or always_disallow:
-    allowed = False
-
-  if not CP.openpilotLongitudinalControl and CP_SP.pcmCruiseSpeed:
-    allowed = False
+  allowed = CP.openpilotLongitudinalControl or not CP_SP.pcmCruiseSpeed
 
   if not allowed:
     if params.get("SpeedLimitMode", return_default=True) == SpeedLimitMode.assist:

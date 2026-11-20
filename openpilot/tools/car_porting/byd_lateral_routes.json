@@ -1,0 +1,221 @@
+[
+  {
+    "source": "sp",
+    "route": "0000003e--8922773d4e",
+    "root": "/home/lsr/.comma/media/0/realdata",
+    "t0": 50911.045632718,
+    "segments": [
+      3,
+      8,
+      18
+    ]
+  },
+  {
+    "source": "sp",
+    "route": "00000045--3f6505fb9e",
+    "root": "/home/lsr/.comma/media/0/realdata",
+    "t0": 58774.915160699005,
+    "segments": [
+      0,
+      4,
+      6
+    ]
+  },
+  {
+    "source": "sp",
+    "route": "00000046--4e6c1c2e98",
+    "root": "/home/lsr/.comma/media/0/realdata",
+    "t0": 59891.105242122,
+    "segments": [
+      1
+    ]
+  },
+  {
+    "source": "sp",
+    "route": "00000047--fa9cbadc1b",
+    "root": "/home/lsr/.comma/media/0/realdata",
+    "t0": 170.559241259,
+    "segments": [
+      3,
+      6
+    ]
+  },
+  {
+    "source": "sp",
+    "route": "00000049--e9ce7f7e60",
+    "root": "/home/lsr/.comma/media/0/realdata",
+    "t0": 1036.756767019,
+    "segments": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5
+    ]
+  },
+  {
+    "source": "sp",
+    "route": "0000004b--d08b442c26",
+    "root": "/home/lsr/.comma/media/0/realdata",
+    "t0": 2640.212673413,
+    "segments": [
+      3,
+      4,
+      5
+    ]
+  },
+  {
+    "source": "sp",
+    "route": "0000004d--b0c7eec37e",
+    "root": "/home/lsr/.comma/media/0/realdata",
+    "t0": 4637.307226384,
+    "segments": [
+      1,
+      2,
+      5,
+      6
+    ]
+  },
+  {
+    "source": "sp",
+    "route": "0000004e--29acbd8b90",
+    "root": "/home/lsr/.comma/media/0/realdata",
+    "t0": 5304.375795009,
+    "segments": [
+      0
+    ]
+  },
+  {
+    "source": "sp",
+    "route": "0000004f--c8ef9f5df8",
+    "root": "/home/lsr/.comma/media/0/realdata",
+    "t0": 5642.295012071,
+    "segments": [
+      0,
+      1
+    ]
+  },
+  {
+    "source": "sp",
+    "route": "00000050--c9381953f6",
+    "root": "/home/lsr/.comma/media/0/realdata",
+    "t0": 5771.027056685,
+    "segments": [
+      0
+    ]
+  },
+  {
+    "source": "sp",
+    "route": "00000051--201b6e1171",
+    "root": "/home/lsr/.comma/media/0/realdata",
+    "t0": 6297.40481841,
+    "segments": [
+      0,
+      2,
+      4,
+      5
+    ]
+  },
+  {
+    "source": "sp",
+    "route": "00000053--d14ac49d16",
+    "root": "/home/lsr/.comma/media/0/realdata",
+    "t0": 7633.6794204180005,
+    "segments": [
+      0
+    ]
+  },
+  {
+    "source": "sp",
+    "route": "00000054--1f94224440",
+    "root": "/home/lsr/.comma/media/0/realdata",
+    "t0": 7896.179731693001,
+    "segments": [
+      0,
+      1
+    ]
+  },
+  {
+    "source": "sp",
+    "route": "00000055--b07126264b",
+    "root": "/home/lsr/.comma/media/0/realdata",
+    "t0": 8147.424688418,
+    "segments": [
+      0,
+      2,
+      6
+    ]
+  },
+  {
+    "source": "sp",
+    "route": "00000056--c2d7e59216",
+    "root": "/home/lsr/.comma/media/0/realdata",
+    "t0": 16431.800115204,
+    "segments": [
+      4,
+      5
+    ]
+  },
+  {
+    "source": "sp",
+    "route": "00000057--5295959dca",
+    "root": "/home/lsr/.comma/media/0/realdata",
+    "t0": 17431.355357706,
+    "segments": [
+      1,
+      2,
+      3,
+      4,
+      5
+    ]
+  },
+  {
+    "source": "sp",
+    "route": "00000058--c5ce3cb640",
+    "root": "/home/lsr/.comma/media/0/realdata",
+    "t0": 1153.684653776,
+    "segments": [
+      1,
+      8,
+      9,
+      11
+    ]
+  },
+  {
+    "source": "archive",
+    "route": "0000001d--faa18f3d8d",
+    "root": "/data/cpv9-shengda_0429/data/comma",
+    "t0": 38.754212165000006,
+    "segments": [
+      1
+    ]
+  },
+  {
+    "source": "archive",
+    "route": "0000002c--aabfb649c0",
+    "root": "/data/cpv9-shengda_0429/data/comma",
+    "t0": 1626.8313632230002,
+    "segments": [
+      1
+    ]
+  },
+  {
+    "source": "archive",
+    "route": "00000056--b8e350db82",
+    "root": "/data/cpv9-shengda_0429/data/comma",
+    "t0": 28.255940151,
+    "segments": [
+      6
+    ]
+  },
+  {
+    "source": "archive",
+    "route": "00000048--6bb5b5ab79",
+    "root": "/data/cpv9-shengda_0429/data/comma",
+    "t0": 657.030946448,
+    "segments": [
+      3
+    ]
+  }
+]

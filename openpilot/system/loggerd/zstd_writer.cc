@@ -38,8 +38,14 @@ void ZstdFileWriter::write(void* data, size_t size) {
   // Add data to the input cache
   input_cache_.insert(input_cache_.end(), (uint8_t*)data, (uint8_t*)data + size);
 
-  // If the cache is full, compress and write to the file
-  if (input_cache_.size() >= input_cache_capacity_) {
+  // End checkpoints only between complete messages, retaining a readable prefix
+  // after process death. fflush does not guarantee durability after power loss.
+  const auto now = std::chrono::steady_clock::now();
+  if (now - last_checkpoint_ >= std::chrono::seconds(1)) {
+    flushCache(true);
+    util::safe_fflush(file_);
+    last_checkpoint_ = now;
+  } else if (input_cache_.size() >= input_cache_capacity_) {
     flushCache(false);
   }
 }

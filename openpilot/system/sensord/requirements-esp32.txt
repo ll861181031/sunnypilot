@@ -1,0 +1,2 @@
+# Optional PC-only ESP32-C3 USB backend.
+pyserial==3.5

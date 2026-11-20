@@ -57,6 +57,13 @@ class CruiseLayout(Widget):
       description=tr("Use map data to estimate the appropriate speed to drive through turns ahead."),
       param="SmartCruiseControlMap")
 
+    self.accel_boost_toggle = toggle_item_sp(
+      title=tr("Acceleration Boost"),
+      description=tr("Adds a small push on top of sunnypilot's own acceleration while the model predicts no braking, " +
+                     "stronger in Aggressive and gentler in Relaxed. Eases off in curves and when sunnypilot slows or stops. " +
+                     "Never goes past your set speed, and lead-car following still comes first."),
+      param="AccelBoostSP")
+
     self.custom_acc_toggle = toggle_item_sp(
       title=tr("Custom ACC Speed Increments"),
       description="",
@@ -92,6 +99,7 @@ class CruiseLayout(Widget):
       self.dec_toggle,
       self.scc_v_toggle,
       self.scc_m_toggle,
+      self.accel_boost_toggle,
       self.custom_acc_toggle,
       self.custom_acc_short_increment,
       self.custom_acc_long_increment,
@@ -127,7 +135,6 @@ class CruiseLayout(Widget):
         self.icbm_toggle.action_item.set_enabled(ui_state.is_offroad())
         self.icbm_toggle.set_description(tr(ICBM_DESC))
       else:
-        ui_state.params.remove("IntelligentCruiseButtonManagement")
         self.icbm_toggle.action_item.set_enabled(False)
 
         long_desc = ICMB_UNAVAILABLE
@@ -147,19 +154,20 @@ class CruiseLayout(Widget):
         self.dec_toggle.action_item.set_enabled(has_long)
         self.scc_v_toggle.action_item.set_enabled(True)
         self.scc_m_toggle.action_item.set_enabled(True)
+        # Without openpilot longitudinal control the planner degrades to the gas-pedal-only
+        # AccelBoost, so this switch would look on while doing nothing predictive.
+        self.accel_boost_toggle.action_item.set_enabled(has_long)
       else:
-        ui_state.params.remove("CustomAccIncrementsEnabled")
-        ui_state.params.remove("DynamicExperimentalControl")
-        ui_state.params.remove("SmartCruiseControlVision")
-        ui_state.params.remove("SmartCruiseControlMap")
         self.custom_acc_toggle.action_item.set_enabled(False)
         self.dec_toggle.action_item.set_enabled(False)
         self.scc_v_toggle.action_item.set_enabled(False)
         self.scc_m_toggle.action_item.set_enabled(False)
+        self.accel_boost_toggle.action_item.set_enabled(False)
 
     else:
       has_icbm = has_long = False
       self.icbm_toggle.action_item.set_enabled(False)
+      self.accel_boost_toggle.action_item.set_enabled(False)
       self.icbm_toggle.set_description(tr(ONROAD_ONLY_DESCRIPTION))
 
     show_custom_acc_desc = False

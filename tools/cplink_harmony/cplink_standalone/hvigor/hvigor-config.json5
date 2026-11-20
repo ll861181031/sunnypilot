@@ -1,0 +1,21 @@
+{
+  "modelVersion": "6.0.0",
+  "dependencies": {
+    "@ohos/hvigor-ohos-plugin": "file:C:/Program Files/Huawei/DevEco Studio/tools/hvigor/hvigor-ohos-plugin",
+    "@ohos/hvigor": "file:C:/Program Files/Huawei/DevEco Studio/tools/hvigor/hvigor"
+  },
+  "execution": {
+    "analyze": "normal",
+    "daemon": true,
+    "incremental": true,
+    "parallel": true,
+    "typeCheck": false
+  },
+  "debugging": {
+    "stack": false,
+    "type": "default"
+  },
+  "nodeOptions": {
+    "maxOldSpaceSize": 8192
+  }
+}

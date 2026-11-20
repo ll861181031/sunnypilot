@@ -5,8 +5,10 @@ from openpilot.selfdrive.ui.mici.widgets.button import BigButton, BigToggle, Big
 from openpilot.selfdrive.ui.mici.widgets.dialog import BigDialog, BigInputDialog, BigConfirmationCircleButton
 from openpilot.system.ui.lib.application import gui_app
 from openpilot.selfdrive.ui.layouts.settings.common import restart_needed_callback
+from openpilot.selfdrive.ui.layouts.settings.developer import adb_ssh_controls_enabled
 from openpilot.selfdrive.ui.ui_state import ui_state
 from openpilot.selfdrive.ui.widgets.ssh_key import SshKeyFetcher
+from openpilot.system.ui.lib.multilang import tr
 
 
 class AlphaLongConfirmPage(NavScroller):
@@ -18,7 +20,7 @@ class AlphaLongConfirmPage(NavScroller):
                                          lambda: self.dismiss(on_confirm))
 
     self._scroller.add_widgets([
-      GreyBigButton("enabling alpha longitudinal", "scroll to continue",
+      GreyBigButton(tr("enabling alpha longitudinal"), "scroll to continue",
                     gui_app.texture("icons_mici/setup/warning.png", 64, 64)),
       GreyBigButton("", "WARNING: alpha longitudinal control may disable Automatic Emergency Braking (AEB)"),
       GreyBigButton("", "On this car, openpilot defaults to the stock system's built-in ACC."),
@@ -86,9 +88,14 @@ class DeveloperLayoutMici(NavScroller):
                                               toggle_callback=lambda checked: (gui_app.set_show_touches(checked),
                                                                                gui_app.set_show_fps(checked)))
 
+    # ADB and SSH are the operating system's job on the desktop, and nothing in this
+    # repository consumes either param, so the two switches are left out of the page
+    # there instead of being shown doing nothing. Same predicate as the big-screen
+    # developer page, so the two cannot disagree about when they apply.
+    connection_toggles = [self._adb_toggle, self._ssh_toggle] if adb_ssh_controls_enabled() else []
+
     self._scroller.add_widgets([
-      self._adb_toggle,
-      self._ssh_toggle,
+      *connection_toggles,
       self._ssh_keys_btn,
       self._joystick_toggle,
       self._long_maneuver_toggle,
@@ -146,7 +153,6 @@ class DeveloperLayoutMici(NavScroller):
       alpha_avail = ui_state.CP.alphaLongitudinalAvailable
       if not alpha_avail or ui_state.is_release:
         self._alpha_long_toggle.set_visible(False)
-        ui_state.params.remove("AlphaLongitudinalEnabled")
       else:
         self._alpha_long_toggle.set_visible(True)
 

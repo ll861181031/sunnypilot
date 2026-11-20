@@ -16,6 +16,17 @@ First, check out this list of items you'll need to [get started](https://communi
 ## Installation
 Next, refer to the sunnypilot community forum for [installation instructions](https://community.sunnypilot.ai/t/read-before-installing-sunnypilot/254), as well as a complete list of [Recommended Branch Installations](https://community.sunnypilot.ai/t/recommended-branch-installations/235).
 
+## PC 摄像头与驾驶员监控
+
+使用 `USE_WEBCAM=1` 时，PC 默认不启用车内摄像头和 DM 驾驶员监控；comma 设备的原有行为不变。
+
+| 环境变量 | 说明 |
+| --- | --- |
+| `DRIVER_CAM=x` | 启用 DM 摄像头（默认不启用），并指定其设备编号 x；也支持设备路径，空值视为未启用。 |
+
+未配置车内摄像头时，PC 不启动 `dmonitoringmodeld` / `dmonitoringd`，selfdrived 不订阅车内摄像头状态、不检查 DM 消息健康状态，也不注入 DM 事件。
+现有 `SUNNYPILOT_DISABLE_DRIVER_CAMERA=1` 禁用开关仍优先生效；临时启用时将其设为 `0`，并为 `DRIVER_CAM` 指定独立车内摄像头。
+
 ## 🎆 Pull Requests
 We welcome both pull requests and issues on GitHub. Bug fixes are encouraged.
 

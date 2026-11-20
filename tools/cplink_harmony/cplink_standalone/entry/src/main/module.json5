@@ -1,0 +1,51 @@
+{
+  "module": {
+    "name": "entry",
+    "type": "feature",
+    "description": "$string:module_desc",
+    "mainElement": "CPlinkAbility",
+    "deviceTypes": [
+      "phone",
+      "tablet"
+    ],
+    "deliveryWithInstall": true,
+    "installationFree": false,
+    "pages": "$profile:main_pages",
+    "abilities": [
+      {
+        "name": "CPlinkAbility",
+        "srcEntry": "./ets/cplinkability/CPlinkAbility.ets",
+        "description": "$string:CPlinkAbility_desc",
+        "icon": "$media:cplink_icon",
+        "label": "$string:CPlinkAbility_label",
+        "startWindowIcon": "$media:cplink_icon",
+        "startWindowBackground": "$color:start_window_background",
+        "exported": true,
+        "skills": [
+          {
+            "entities": [
+              "entity.system.home"
+            ],
+            "actions": [
+              "ohos.want.action.home"
+            ]
+          }
+        ]
+      }
+    ],
+    "requestPermissions": [
+      {
+        "name": "ohos.permission.INTERNET"
+      },
+      {
+        "name": "ohos.permission.GET_NETWORK_INFO"
+      }
+    ],
+    "metadata": [
+      {
+        "name": "ohos.net.network_security_config",
+        "resource": "$profile:network_config"
+      }
+    ]
+  }
+}

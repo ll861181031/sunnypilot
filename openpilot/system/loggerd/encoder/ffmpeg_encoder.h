@@ -27,7 +27,14 @@ public:
 private:
   int segment_num = -1;
   int counter = 0;
+  int64_t input_counter = 0;
   bool is_open = false;
+
+  // Applied by the next encoder_open(): libx264 cannot change its rate control on a
+  // running context, and encoderd asks for a new bitrate on every livestream frame.
+  int requested_bitrate = -1;
+  // Set by request_keyframe(), consumed by the next encode_frame().
+  bool force_keyframe = false;
 
   AVCodecContext *codec_ctx;
   AVFrame *frame = NULL;

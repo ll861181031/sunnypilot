@@ -9,6 +9,8 @@ from openpilot.cereal import messaging, custom
 from opendbc.car import structs
 from openpilot.common.constants import CV
 from openpilot.selfdrive.car.cruise import V_CRUISE_MAX
+from openpilot.selfdrive.controls.lib.accel_boost import AccelBoost
+from openpilot.sunnypilot.selfdrive.controls.lib.accel_boost import AccelBoostSP
 from openpilot.sunnypilot.selfdrive.controls.lib.dec.dec import DynamicExperimentalController
 from openpilot.sunnypilot.selfdrive.controls.lib.e2e_alerts_helper import E2EAlertsHelper
 from openpilot.sunnypilot.selfdrive.controls.lib.smart_cruise_control.smart_cruise_control import SmartCruiseControl
@@ -32,6 +34,9 @@ class LongitudinalPlannerSP:
     self.generation = int(model_bundle.generation) if (model_bundle := get_active_bundle()) else None
     self.source = LongitudinalPlanSource.cruise
     self.e2e_alerts_helper = E2EAlertsHelper()
+
+    self.accel_boost_sp = AccelBoostSP()
+    self.openpilot_longitudinal = CP.openpilotLongitudinalControl
 
     self.output_v_target = 0.
     self.output_a_target = 0.
@@ -74,9 +79,37 @@ class LongitudinalPlannerSP:
     return self.output_v_target, self.output_a_target
 
   def update(self, sm: messaging.SubMaster) -> None:
+    # The predictive boost needs openpilot's own longitudinal control to mean anything;
+    # on a stock-longitudinal car it degrades to the gas-pedal-only AccelBoost instead of
+    # being silently ignored. Only re-decide when the parameter actually flips, otherwise
+    # the freshly built object would throw away its accumulated boost every cycle.
+    if self.accel_boost_sp.update_params():
+      self._swap_accel_boost()
+
     self.events_sp.clear()
     self.dec.update(sm)
     self.e2e_alerts_helper.update(sm, self.events_sp)
+
+  def _swap_accel_boost(self) -> None:
+    self.accel_boost = self.accel_boost_sp if (self.accel_boost_sp.enabled and self.openpilot_longitudinal) else AccelBoost()
+
+  def populate_control_evidence(self, plan) -> None:
+    plan.trafficLightState = getattr(self, 'light_stop_state', 'unknown')
+    plan.trafficLightReason = getattr(self, 'light_stop_reason', '')
+    plan.trafficLightTargetId = getattr(self, 'light_stop_target_id', '')
+    plan.trafficLightDistance = float(getattr(self, 'light_stop_distance', -1.0))
+    turn = getattr(self, 'turn_guard_result', None)
+    if turn is not None:
+      plan.turnGuardActive = turn.active
+      plan.turnGuardEnforced = turn.active and self.turn_guard.enforce
+      plan.turnGuardReason = turn.reason
+      plan.turnGuardAccelMax = turn.proposed_accel_max if turn.active else 0.0
+    lead = getattr(self, 'lead_guard_result', None)
+    if lead is not None:
+      plan.leadGuardActive = lead.active
+      plan.leadGuardEnforced = lead.active and self.lead_guard_enforce
+      plan.leadGuardReason = lead.reason
+      plan.leadGuardAge = lead.age
 
   def publish_longitudinal_plan_sp(self, sm: messaging.SubMaster, pm: messaging.PubMaster) -> None:
     plan_sp_send = messaging.new_message('longitudinalPlanSP')
@@ -88,6 +121,7 @@ class LongitudinalPlannerSP:
     longitudinalPlanSP.vTarget = float(self.output_v_target)
     longitudinalPlanSP.aTarget = float(self.output_a_target)
     longitudinalPlanSP.events = self.events_sp.to_msg()
+    self.populate_control_evidence(longitudinalPlanSP)
 
     # Dynamic Experimental Control
     dec = longitudinalPlanSP.dec

@@ -5,7 +5,7 @@ import time
 import uuid
 
 from openpilot.common.test import OpenpilotTestCase
-from openpilot.common.params import Params, ParamKeyFlag, UnknownKeyName
+from openpilot.common.params import Params, ParamKeyFlag, ParamKeyType, UnknownKeyName
 
 class TestParams(OpenpilotTestCase):
   def setup_method(self):
@@ -113,6 +113,36 @@ class TestParams(OpenpilotTestCase):
     assert len(keys) > 20
     assert len(keys) == len(set(keys))
     assert b"CarParams" in keys
+
+  def test_all_registered_keys_readable_by_another_handle(self):
+    samples = {
+      ParamKeyType.BOOL: True,
+      ParamKeyType.INT: 17,
+      ParamKeyType.FLOAT: 0.29,
+      ParamKeyType.STRING: "参数",
+      ParamKeyType.JSON: {"test": [0, False]},
+      ParamKeyType.BYTES: b"\x01\x00\xff",
+      ParamKeyType.TIME: datetime.datetime(2026, 1, 1, tzinfo=datetime.UTC),
+    }
+    reader = Params()
+    for key in self.params.all_keys():
+      expected = samples[self.params.get_type(key)]
+      self.params.put(key, expected, block=True)
+      actual = reader.get(key)
+      assert type(actual) is type(expected) and actual == expected, key
+
+  def test_backup_keys_are_registered_and_unique(self):
+    keys = self.params.all_keys(ParamKeyFlag.BACKUP)
+    assert len(keys) == len(set(keys))
+    assert set(keys) <= set(self.params.all_keys())
+    assert b"IsMetric" in keys and b"CarParams" not in keys
+
+  def test_blocking_write_reports_storage_error(self):
+    os.mkdir(self.params.get_param_path("IsMetric"))
+    with self.assertRaises(OSError):
+      self.params.put("IsMetric", True, block=True)
+    with self.assertRaises(OSError):
+      self.params.put_bool("IsMetric", False, block=True)
 
   def test_params_default_value(self):
     self.params.remove("LanguageSetting")

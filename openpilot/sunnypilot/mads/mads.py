@@ -8,9 +8,8 @@ See the LICENSE.md file in the root directory for more details.
 from openpilot.cereal import log, custom
 
 from opendbc.car import structs
-from opendbc.car.hyundai.values import HyundaiFlags
 from openpilot.common.params import Params
-from openpilot.sunnypilot.mads.helpers import MadsSteeringModeOnBrake, read_steering_mode_param, MADS_NO_ACC_MAIN_BUTTON
+from openpilot.sunnypilot.mads.helpers import MadsSteeringModeOnBrake, read_steering_mode_param
 from openpilot.sunnypilot.mads.state import StateMachine, GEARS_ALLOW_PAUSED_SILENT
 
 State = custom.ModularAssistiveDrivingSystem.ModularAssistiveDrivingSystemState
@@ -34,23 +33,12 @@ class ModularAssistiveDrivingSystem:
     self.active = False
     self.available = False
     self.lateral_mismatch_counter = 0
-    self.allow_always = False
-    self.no_main_cruise = False
     self.selfdrive = selfdrive
     self.selfdrive.enabled_prev = False
     self.state_machine = StateMachine(self)
     self.events = self.selfdrive.events
     self.events_sp = self.selfdrive.events_sp
     self.disengage_on_accelerator = Params().get_bool("DisengageOnAccelerator")
-    if self.CP.brand == "hyundai":
-      if self.CP.flags & (HyundaiFlags.HAS_LDA_BUTTON | HyundaiFlags.CANFD):
-        self.allow_always = True
-    if self.CP.brand == "tesla":
-      self.allow_always = True
-
-    if self.CP.brand in MADS_NO_ACC_MAIN_BUTTON:
-      self.no_main_cruise = True
-
     # read params on init
     self.enabled_toggle = self.params.get_bool("Mads")
     self.main_enabled_toggle = self.params.get_bool("MadsMainCruiseAllowed")
@@ -109,12 +97,16 @@ class ModularAssistiveDrivingSystem:
     # When the safety and selfdrived do not agree on controls_allowed_lateral
     # we want to disengage sunnypilot. However the status from the panda goes through
     # another socket other than the CAN messages and one can arrive earlier than the other.
-    # Therefore we allow a mismatch for two samples, then we trigger the disengagement.
+    # Count consecutive mismatches; a fresh recovery starts a new interval.
     if not self.active or self.selfdrive.enabled:
       self.lateral_mismatch_counter = 0
-    elif any(not ps.controlsAllowedLateral for ps in self.selfdrive.sm['pandaStates']
-             if ps.safetyModel not in IGNORED_SAFETY_MODES):
-      self.lateral_mismatch_counter += 1
+    else:
+      sm = self.selfdrive.sm
+      states = [ps for ps in sm['pandaStates'] if ps.safetyModel not in IGNORED_SAFETY_MODES]
+      fresh = (getattr(sm, 'valid', {}).get('pandaStates', False)
+               and getattr(sm, 'alive', {}).get('pandaStates', False))
+      consistent = fresh and bool(states) and all(ps.controlsAllowedLateral for ps in states)
+      self.lateral_mismatch_counter = 0 if consistent else self.lateral_mismatch_counter + 1
 
   def update_events(self, CS: structs.CarState):
     if not self.selfdrive.enabled and self.enabled:
@@ -171,7 +163,7 @@ class ModularAssistiveDrivingSystem:
       if be.type == ButtonType.cancel:
         if not self.selfdrive.enabled and self.selfdrive.enabled_prev:
           self.events_sp.add(EventNameSP.manualLongitudinalRequired)
-      if be.type == ButtonType.lkas and be.pressed and (CS.cruiseState.available or self.allow_always):
+      if be.type == ButtonType.lkas and be.pressed and CS.cruiseState.available:
         if self.enabled:
           if self.selfdrive.enabled:
             self.events_sp.add(EventNameSP.manualSteeringRequired)
@@ -180,7 +172,7 @@ class ModularAssistiveDrivingSystem:
         else:
           self.events_sp.add(EventNameSP.lkasEnable)
 
-    if not CS.cruiseState.available and not self.no_main_cruise:
+    if not CS.cruiseState.available:
       self.events.remove(EventName.buttonEnable)
       if self.selfdrive.CS_prev.cruiseState.available:
         self.events_sp.add(EventNameSP.lkasDisable)

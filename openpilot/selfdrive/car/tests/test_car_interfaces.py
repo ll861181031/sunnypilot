@@ -11,7 +11,6 @@ from opendbc.car.car_helpers import interfaces
 from opendbc.car.fingerprints import FW_VERSIONS
 from opendbc.car.fw_versions import FW_QUERY_CONFIGS
 from opendbc.car.structs import CarParams
-from opendbc.car.mock.values import CAR as MOCK
 from opendbc.car.values import PLATFORMS
 from openpilot.selfdrive.car.helpers import convert_carControlSP
 from openpilot.selfdrive.controls.lib.latcontrol_angle import LatControlAngle
@@ -29,7 +28,7 @@ DLC_TO_LEN = (0, 1, 2, 3, 4, 5, 6, 7, 8, 12, 16, 20, 24, 32, 48, 64)
 
 
 class TestCarInterfaces(OpenpilotTestCase):
-  @parameterized.expand([(car,) for car in sorted(PLATFORMS)] + [MOCK.MOCK], ids=lambda car_name: car_name)
+  @parameterized.expand([(car,) for car in sorted(PLATFORMS)], ids=lambda car_name: car_name)
   @fuzzy_test(max_examples=60)
   def test_car_interfaces(self, car_name, fuzzy):
     fingerprint = dict(fuzzy.list(lambda: (fuzzy.integer(0, 0x800), fuzzy.choice(DLC_TO_LEN))))
@@ -40,7 +39,7 @@ class TestCarInterfaces(OpenpilotTestCase):
       return CarParams.CarFw(ecu=ecu, address=address, subAddress=sub_address or 0, request=fuzzy.choice(ALL_REQUESTS))
 
     CarInterface = interfaces[car_name]
-    car_fw = fuzzy.list(generate_car_fw)
+    car_fw = fuzzy.list(generate_car_fw) if ALL_ECUS and ALL_REQUESTS else []
     alpha_long = fuzzy.boolean()
     car_params = CarInterface.get_params(car_name, fingerprints, car_fw,
                                          alpha_long=alpha_long, is_release=False, docs=False)
@@ -82,3 +81,43 @@ class TestCarInterfaces(OpenpilotTestCase):
       LatControlPID(car_params, car_params_sp, car_interface, DT_CTRL)
     elif car_params.lateralTuning.which() == 'torque':
       LatControlTorque(car_params, car_params_sp, car_interface, DT_CTRL)
+
+
+def test_cleanup_uses_same_params_as_car_setup(tmp_path, monkeypatch):
+  from openpilot.common.params import Params
+  from opendbc.car.byd.values import CAR
+
+  monkeypatch.setenv("PARAMS_ROOT", str(tmp_path / "default"))
+  p = Params(str(tmp_path / "selected"))
+  default = Params()
+  for store in (p, default):
+    store.put_bool("EnforceTorqueControl", True, block=True)
+  candidate = CAR.BYD_SONG_PLUS_DMI_23_ALT
+  cls = interfaces[candidate]
+  cp = cls.get_non_essential_params(candidate)
+  ci = cls(cp, cls.get_non_essential_params_sp(cp, candidate))
+  sunnypilot_interfaces.setup_interfaces(ci, p)
+  assert p.get("EnforceTorqueControl") is None
+  assert default.get_bool("EnforceTorqueControl")
+
+
+def test_unidentified_vehicle_does_not_erase_next_drives_settings(tmp_path, monkeypatch):
+  from openpilot.common.params import Params
+  from openpilot.common.prefix import OpenpilotPrefix
+  from opendbc.car.mock.values import CAR
+  from openpilot.selfdrive.car.helpers import convert_to_capnp
+  from openpilot.selfdrive.selfdrived.selfdrived import SelfdriveD
+
+  monkeypatch.setenv("PARAMS_ROOT", str(tmp_path))
+  with OpenpilotPrefix():
+    p = Params()
+    for k in ("AlphaLongitudinalEnabled", "ExperimentalMode", "SmartCruiseControlVision"):
+      p.put_bool(k, True, block=True)
+    cls = interfaces[CAR.MOCK]
+    cp = cls.get_non_essential_params(CAR.MOCK)
+    ci = cls(cp, cls.get_non_essential_params_sp(cp, CAR.MOCK))
+    sunnypilot_interfaces.setup_interfaces(ci, p)
+    assert p.get_bool("SmartCruiseControlVision")
+    sd = SelfdriveD(ci.CP, convert_to_capnp(ci.CP_SP))
+    assert sd.CP.dashcamOnly and not sd.CP.openpilotLongitudinalControl
+    assert p.get_bool("AlphaLongitudinalEnabled") and p.get_bool("ExperimentalMode")

@@ -8,6 +8,7 @@ from openpilot.selfdrive.ui.mici.widgets.dialog import BigConfirmationCircleButt
 from openpilot.system.ui.lib.application import gui_app
 from openpilot.selfdrive.ui.layouts.settings.common import restart_needed_callback
 from openpilot.selfdrive.ui.ui_state import ui_state
+from openpilot.system.ui.lib.multilang import tr
 
 PERSONALITY_TO_INT = log.LongitudinalPersonality.schema.enumerants
 
@@ -21,16 +22,16 @@ class ExperimentalModeConfirmPage(NavScroller):
                                          lambda: self.dismiss(on_confirm))
 
     self._scroller.add_widgets([
-      GreyBigButton("enabling\nexperimental mode", "scroll to continue",
+      GreyBigButton(tr("enabling\nexperimental mode"), "scroll to continue",
                     gui_app.texture("icons_mici/setup/warning.png", 64, 64)),
       GreyBigButton("", "openpilot defaults to driving in chill mode."),
       GreyBigButton("", "Experimental mode enables alpha-level features that aren't ready for chill mode."),
-      GreyBigButton("End-to-End Longitudinal Control"),
+      GreyBigButton(tr("End-to-End Longitudinal Control")),
       GreyBigButton("", "Let the driving model control the gas and brakes."),
       GreyBigButton("", "openpilot will drive as it thinks a human would, including stopping for red lights and stop signs."),
       GreyBigButton("", "The set speed will only act as an upper bound."),
       GreyBigButton("", "This is an alpha quality feature; mistakes should be expected."),
-      GreyBigButton("New Driving Visualization"),
+      GreyBigButton(tr("New Driving Visualization")),
       GreyBigButton("", "The path will change colors to communicate acceleration intent."),
       GreyBigButton("", "Red for braking, green for acceleration, and gray for coasting."),
       accept,
@@ -109,7 +110,6 @@ class TogglesLayoutMici(NavScroller):
         self._experimental_btn.set_visible(False)
         self._experimental_btn.set_checked(False)
         self._personality_toggle.set_visible(False)
-        ui_state.params.remove("ExperimentalMode")
 
     # Refresh toggles from params to mirror external changes
     for key, item in self._refresh_toggles:

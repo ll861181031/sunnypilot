@@ -1,0 +1,14 @@
+宋 PLUS 修复版 V2 模型来源记录
+实际 GLB 名称：2024 比亚迪宋PLUS DM-i（修复版）
+实际 GLB 声明：Ddiaz Design · CC-BY-NC-SA-4.0（不可商用）
+来源压缩包：3D 示例23宋plus-修复版V2.zip
+注意：原包 LICENSE-car.txt 的车型标题及来源链接仍指向 2016 Exotic Rides W70，与本次 GLB 车型不一致；下方原文原样保留，不能据此认定两者为同一车型。
+本次适配保留几何、贴图和部件配置，修正两处转向灯材质别名，转换为 CARM v6，保留 APP 白色车漆。模型声明的非商业及相同方式共享限制随来源保留。
+
+===== 原包 LICENSE-car.txt 原文 =====
+3D 车模型（car-model.js）
+  名称：2016 Exotic Rides W70
+  作者：Ddiaz Design（https://sketchfab.com/ddiaz-design）
+  来源：https://sketchfab.com/3d-models/2016-exotic-rides-w70-9c2b97cd6e104671a2f90992c64cc849
+  许可：CC BY-NC-SA 4.0（https://creativecommons.org/licenses/by-nc-sa/4.0/）——署名、非商业性使用、相同方式共享
+  改动：压缩了贴图和顶点数据（_tools/gen/car-model.py），卡片里替换了车漆、玻璃、灯的材质，车门、引擎盖、尾箱按车况开合。

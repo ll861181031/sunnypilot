@@ -219,7 +219,11 @@ class OffroadAlert(AbstractAlert):
       alert_json = self.params.get(alert_data.key)
 
       if alert_json:
-        text = alert_json.get("text", "").replace("%1", alert_json.get("extra", ""))
+        # Translate the template before %1 substitution: the stored text is the
+        # English template, so the catalog key must be matched before the value
+        # is spliced in. Unknown/dynamic templates fall through unchanged.
+        template = tr(alert_json.get("text", ""))
+        text = template.replace("%1", alert_json.get("extra", ""))
 
       alert_data.text = text
       alert_data.visible = bool(text)

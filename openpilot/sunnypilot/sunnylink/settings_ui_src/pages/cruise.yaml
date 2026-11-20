@@ -157,21 +157,6 @@ sections:
           - type: capability
             field: has_icbm
             equals: true
-        - type: not
-          condition:
-            type: capability
-            field: brand
-            equals: rivian
-        - type: not
-          condition:
-            type: all
-            conditions:
-            - type: capability
-              field: brand
-              equals: tesla
-            - type: capability
-              field: is_sp_release
-              equals: true
     - key: SpeedLimitPolicy
       widget: multiple_button
       title: Speed Limit Source
@@ -267,3 +252,17 @@ sections:
       - type: capability
         field: has_icbm
         equals: true
+  - key: AccelBoostSP
+    widget: toggle
+    title: Acceleration Boost
+    description: Adds a small push on top of sunnypilot's own acceleration while the model predicts no braking, stronger
+      in Aggressive and gentler in Relaxed. Eases off in curves and when sunnypilot slows or stops. Never goes past your
+      set speed, and lead-car following still comes first.
+    visibility:
+    - type: capability
+      field: has_longitudinal_control
+      equals: true
+    enablement:
+    - type: capability
+      field: has_longitudinal_control
+      equals: true

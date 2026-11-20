@@ -12,6 +12,7 @@ from msgq.visionipc import VisionIpcClient
 
 
 from openpilot.common.params import Params
+from openpilot.common.camera_config import driver_camera_available
 from openpilot.common.realtime import config_realtime_process, Priority, Ratekeeper, DT_CTRL
 from openpilot.common.swaglog import cloudlog
 from openpilot.common.gps import get_gps_location_service
@@ -24,11 +25,10 @@ from openpilot.selfdrive.selfdrived.state import StateMachine
 from openpilot.selfdrive.selfdrived.alertmanager import AlertManager, set_offroad_alert
 
 from openpilot.common.version import get_build_metadata
-from openpilot.common.hardware import HARDWARE
+from openpilot.common.hardware import HARDWARE, PC
 
 from openpilot.sunnypilot.mads.mads import ModularAssistiveDrivingSystem
 from openpilot.sunnypilot import get_sanitize_int_param
-from openpilot.sunnypilot.selfdrive.car.car_specific import CarSpecificEventsSP
 from openpilot.sunnypilot.selfdrive.car.cruise_helpers import CruiseHelper
 from openpilot.sunnypilot.selfdrive.car.intelligent_cruise_button_management.controller import IntelligentCruiseButtonManagement
 from openpilot.sunnypilot.selfdrive.selfdrived.button_state_tracker import ButtonStateTracker
@@ -39,6 +39,35 @@ SIMULATION = "SIMULATION" in os.environ
 TESTING_CLOSET = "TESTING_CLOSET" in os.environ
 
 LONGITUDINAL_PERSONALITY_MAP = {v: k for k, v in log.LongitudinalPersonality.schema.enumerants.items()}
+# Messages whose message-level valid flag mirrors the health of other messages rather
+# than the quality of their own output:
+#   calibrationd: msg.valid = sm.all_checks()        # cameraOdometry, carState
+#   paramsd:      learner.get_msg(sm.all_checks())   # deviceMotion, extrinsicsCalibration, carState
+#   plannerd:     plan_send.valid = sm.all_checks()  # longitudinal_planner.py:162
+# Checking them in selfdrived's all_checks() counts one hiccup twice - on the message
+# that had it and on everything downstream - and each count becomes commIssue
+# (SOFT_DISABLE + NO_ENTRY), a disengagement no dedicated alert asked for.
+#
+# Measured on route 00000046: 36 commIssue events, 36/36 of them within 300 ms of an
+# invalid vehicleParameters, extrinsicsCalibration or cameraOdometry frame. The
+# condition behind them is already reported by locationdTemporaryError, which carries
+# the same NO_ENTRY + SOFT_DISABLE flags.
+#
+# longitudinalPlan is the same cascade one level deeper, measured on 2026-10-17: an
+# invalid liveLocationKalman made paramsd publish an invalid vehicleParameters, which
+# made plannerd republish that as an invalid longitudinalPlan, which selfdrived then
+# counted a third time as commIssue and refused to engage. The plan flag carries no
+# information the parametrisation flag did not already carry.
+#
+# Only validity is relaxed for these: liveness and frequency still use the full ignore
+# list, so a publisher that dies or stalls is caught, and calStatus still drives
+# calibrationInvalid.
+VALIDITY_MIRROR_MESSAGES = ('extrinsicsCalibration', 'vehicleParameters', 'longitudinalPlan')
+
+# A driver-facing camera that is missing or was rejected by camerad (the same
+# probe the manager uses) disables DM instead of waiting for cabin frames that
+# will never arrive. On PC the cabin stream still only exists under USE_WEBCAM.
+DM_ENABLED = driver_camera_available() and (not PC or os.getenv("USE_WEBCAM") is not None)
 
 ThermalStatus = log.DeviceState.ThermalStatus
 State = log.SelfdriveState.OpenpilotState
@@ -92,18 +121,52 @@ class SelfdriveD(CruiseHelper):
 
     self.gps_location_service = get_gps_location_service(self.params)
     self.gps_packets = [self.gps_location_service]
-    self.sensor_packets = ["accelerometer", "gyroscope"]
-    self.camera_packets = ["narrowRoadCameraState", "cabinCameraState", "wideRoadCameraState"]
+    self.sensor_packets = [] if PC else ["accelerometer", "gyroscope"]
+    self.camera_packets = ["narrowRoadCameraState"]
+    if DM_ENABLED:
+      self.camera_packets.append("cabinCameraState")
+    # wideRoadCameraState is deliberately not required. It is the model's optional
+    # second input: single vs dual camera is decided by whether the device is
+    # plugged in, camerad drops it rather than dying when it stops delivering, and
+    # modeld falls back to the single-camera path. A camera that only costs an
+    # extra input must not raise cameraMalfunction, which is PERMANENT +
+    # SOFT_DISABLE + NO_ENTRY and would block engagement entirely. The WIDE CAM
+    # note is a view label (shown only while the wide stream is actually drawn),
+    # not a health signal, so camerad's log is what records a failed camera.
 
     # TODO: de-couple selfdrived with card/conflate on carState without introducing controls mismatches
     self.car_state_sock = messaging.sub_sock('carState', timeout=20)
 
     ignore = self.sensor_packets + self.gps_packets + ['alertDebug', 'lateralManeuverPlan'] + ['modelDataV2SP', 'longitudinalPlanSP']
+    if PC:
+      ignore += ['accelerometer', 'gyroscope']
+    if not DM_ENABLED:
+      ignore += ['driverMonitoringState']
     if SIMULATION:
       ignore += ['cabinCameraState', 'managerState']
     if REPLAY:
       # no vipc in replay will make them ignored anyways
       ignore += ['narrowRoadCameraState', 'wideRoadCameraState']
+
+    # These publishers set the message-level valid flag from their own inputs'
+    # health, not from the quality of what they publish:
+    #   calibrationd: msg.valid = sm.all_checks()          # cameraOdometry, carState
+    #   paramsd:      learner.get_msg(sm.all_checks())     # deviceMotion, extrinsicsCalibration, carState
+    # So a transient on any of those propagates twice - once on the message that had
+    # the problem and again on everything downstream of it. selfdrived runs
+    # all_checks() over this SubMaster and turns any failure into commIssue
+    # (SOFT_DISABLE + NO_ENTRY), so the cascade costs a disengagement for a hiccup
+    # that no dedicated alert raised.
+    #
+    # Measured on route 00000046: 36 commIssue events, and 36/36 of them fall within
+    # 300 ms of an invalid vehicleParameters, extrinsicsCalibration or cameraOdometry
+    # frame (199 such frames). The condition behind them is already covered by
+    # locationdTemporaryError, which carries the same NO_ENTRY + SOFT_DISABLE flags.
+    #
+    # Only validity is relaxed. Liveness and frequency stay in the shared ignore list,
+    # so a publisher that stops or slows down is still caught, and calibrationInvalid
+    # still reports an unusable calibration through calStatus.
+    ignore_valid = ignore + list(VALIDITY_MIRROR_MESSAGES)
     self.sm = messaging.SubMaster(['deviceState', 'pandaStates', 'peripheralState', 'modelV2', 'extrinsicsCalibration',
                                    'carOutput', 'driverMonitoringState', 'longitudinalPlan', 'deviceMotion', 'lateralDelay',
                                    'managerState', 'vehicleParameters', 'radarState', 'lateralTorqueParameters',
@@ -111,7 +174,7 @@ class SelfdriveD(CruiseHelper):
                                    'lateralManeuverPlan', 'modelDataV2SP', 'longitudinalPlanSP'] + \
                                    self.camera_packets + self.sensor_packets + self.gps_packets,
                                   ignore_alive=ignore, ignore_avg_freq=ignore,
-                                  ignore_valid=ignore, frequency=int(1/DT_CTRL))
+                                  ignore_valid=ignore_valid, frequency=int(1/DT_CTRL))
 
     # read params
     self.is_metric = self.params.get_bool("IsMetric")
@@ -121,9 +184,9 @@ class SelfdriveD(CruiseHelper):
     car_recognized = self.CP.brand != 'mock'
 
     # cleanup old params
-    if not self.CP.alphaLongitudinalAvailable:
+    if not self.CP.alphaLongitudinalAvailable and (car_recognized or build_metadata.release_channel or build_metadata.release_sp_channel):
       self.params.remove("AlphaLongitudinalEnabled")
-    if not self.CP.openpilotLongitudinalControl:
+    if car_recognized and not self.CP.openpilotLongitudinalControl:
       self.params.remove("ExperimentalMode")
 
     self.CS_prev = car.CarState.new_message()
@@ -180,7 +243,6 @@ class SelfdriveD(CruiseHelper):
     self.mads = ModularAssistiveDrivingSystem(self)
     self.icbm = IntelligentCruiseButtonManagement(self.CP, self.CP_SP)
 
-    self.car_events_sp = CarSpecificEventsSP(self.CP, self.CP_SP)
 
     CruiseHelper.__init__(self, self.CP)
     self.button_state_tracker = ButtonStateTracker()
@@ -248,7 +310,7 @@ class SelfdriveD(CruiseHelper):
       self.events.add(EventName.resumeBlocked)
 
     # Handle DM
-    if not self.CP.notCar:
+    if not self.CP.notCar and DM_ENABLED:
       # Block engaging until lockout times out or ignition reset
       if self.sm['driverMonitoringState'].lockout and not self.dm_lockout_set:
         self.params.put_bool("DriverTooDistracted", True)
@@ -271,15 +333,14 @@ class SelfdriveD(CruiseHelper):
       if self.sm['driverMonitoringState'].visionPolicyState.uncertainOffroadAlertPercent >= 100 and not self.dm_uncertain_alerted:
         set_offroad_alert("Offroad_DriverMonitoringUncertain", True)
         self.dm_uncertain_alerted = True
+
+    if not self.CP.notCar:
       self.events_sp.add_from_msg(self.sm['longitudinalPlanSP'].events)
 
     # Add car events, ignore if CAN isn't valid
     if CS.canValid:
       car_events = self.car_events.update(CS, self.CS_prev, self.sm['carControl']).to_msg()
       self.events.add_from_msg(car_events)
-
-      car_events_sp = self.car_events_sp.update(CS, self.events).to_msg()
-      self.events_sp.add_from_msg(car_events_sp)
 
       if self.CP.notCar:
         # wait for everything to init first

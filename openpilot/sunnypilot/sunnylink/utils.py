@@ -1,4 +1,5 @@
 import base64
+import datetime
 import gzip
 import json
 from openpilot.sunnypilot.sunnylink.api import SunnylinkApi, UNREGISTERED_SUNNYLINK_DONGLE_ID
@@ -101,7 +102,7 @@ def save_param_from_base64_encoded_string(param_name: str, base64_encoded_data: 
   params.put(param_name, param_value, block=True)
 
 
-def _convert_param_to_type(value: bytes, param_type: ParamKeyType) -> bytes | str | int | float | bool | dict | None:
+def _convert_param_to_type(value: bytes, param_type: ParamKeyType) -> bytes | str | int | float | bool | datetime.datetime | dict | list | None:
   """
   Convert a byte value to the specified param type. Used internally when getting a Param to convert it to the right type.
   If this method looks familiar, it's because on SP we have a similar one in openpilot/sunnypilot/car/__init__.py.
@@ -122,7 +123,7 @@ def _convert_param_to_type(value: bytes, param_type: ParamKeyType) -> bytes | st
   elif param_type == ParamKeyType.FLOAT:
     return float(decoded)
   elif param_type == ParamKeyType.TIME:
-    return str(decoded)
+    return datetime.datetime.fromisoformat(decoded)
   elif param_type == ParamKeyType.JSON:
     return json.loads(decoded)
 

@@ -7,6 +7,7 @@ See the LICENSE.md file in the root directory for more details.
 """
 import logging
 import os
+import platform
 import stat
 import time
 import traceback
@@ -19,10 +20,10 @@ from openpilot.common.params import Params
 from openpilot.common.hardware.hw import Paths
 from openpilot.common.spinner import Spinner
 from openpilot.common.version import is_prebuilt
-from openpilot.sunnypilot.mapd import MAPD_PATH, MAPD_BIN_DIR
+from openpilot.sunnypilot.mapd import MAPD_PATH, MAPD_BIN_DIR, VERSION
+from openpilot.sunnypilot.mapd.runtime import mapd_available
 import openpilot.system.sentry as sentry
 
-VERSION = "v1.12.0"
 URL = f"https://github.com/pfeiferj/openpilot-mapd/releases/download/{VERSION}/mapd"
 
 
@@ -40,7 +41,12 @@ class MapdInstallManager:
 
   def download(self) -> None:
     self.ensure_directories_exist()
-    self._download_file()
+    if platform.machine() == "x86_64":
+      if not mapd_available():
+        raise RuntimeError("Build the native mapd first: python -m openpilot.sunnypilot.mapd.build_native --go /path/to/go")
+    else:
+      if not self._download_file():
+        raise RuntimeError("mapd download failed after all retries")
     update_installed_version(VERSION, self._params)
 
   def check_and_download(self) -> None:
@@ -48,6 +54,8 @@ class MapdInstallManager:
       self.download()
 
   def download_needed(self) -> bool:
+    if platform.machine() == "x86_64":
+      return not mapd_available() or self.get_installed_version() != VERSION
     return not os.path.exists(MAPD_PATH) or self.get_installed_version() != VERSION
 
   @staticmethod
@@ -66,7 +74,9 @@ class MapdInstallManager:
     current_permissions = stat.S_IMODE(os.lstat(file_path).st_mode)
     os.chmod(file_path, current_permissions | stat.S_IEXEC)
 
-  def _download_file(self, num_retries=5) -> None:
+  def _download_file(self, num_retries=5) -> bool:
+    if platform.system() != "Linux" or platform.machine() != "aarch64":
+      raise RuntimeError("The upstream download is ARM64-only; build mapd locally for this host")
     temp_file = Path(MAPD_PATH + ".tmp")
     download_timeout = 60
     for cnt in range(num_retries):
@@ -76,7 +86,7 @@ class MapdInstallManager:
         self._safe_write_and_set_executable(temp_file, response.content)
         # No exceptions encountered. Safe to replace original file.
         temp_file.replace(MAPD_PATH)
-        return
+        return True
       except requests.exceptions.ReadTimeout:
         self._spinner.update(f"ReadTimeout caught. Timeout is [{download_timeout}]. Retrying download... [{cnt}]")
         time.sleep(0.5)
@@ -88,6 +98,7 @@ class MapdInstallManager:
     if temp_file.exists():
       temp_file.unlink()
     logging.error("Failed to download file after all retries")
+    return False
 
   def get_installed_version(self) -> str:
     return str(self._params.get("MapdVersion") or "")
@@ -109,7 +120,12 @@ class MapdInstallManager:
 
   def non_prebuilt_install(self) -> None:
     sm = messaging.SubMaster(['deviceState'])
-    metered = sm['deviceState'].networkMetered
+    sm.update(500)
+    # A never-updated SubMaster returns its default message, where
+    # networkMetered is always False. If the state is not fresh, assume metered
+    # rather than spending the user's data by accident.
+    fresh = sm.seen.get('deviceState', False) and sm.valid.get('deviceState', False)
+    metered = (not fresh) or sm['deviceState'].networkMetered
 
     if metered:
       self._spinner.update("Can't proceed with mapd install since network is metered!")
@@ -118,6 +134,10 @@ class MapdInstallManager:
 
     try:
       self.ensure_directories_exist()
+      if platform.machine() == "x86_64":
+        self.check_and_download()
+        self._spinner.update("Native mapd is good!")
+        return
       if not self.download_needed():
         self._spinner.update("Mapd is good!")
         time.sleep(0.1)

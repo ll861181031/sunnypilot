@@ -1,4 +1,5 @@
 #include <cassert>
+#include <cstring>
 
 #include "system/loggerd/video_writer.h"
 #include "common/swaglog.h"
@@ -15,13 +16,21 @@ VideoWriter::VideoWriter(const char *path, const char *filename, bool remuxing, 
 
   LOGD("encoder_open %s remuxing:%d", this->vid_path.c_str(), this->remuxing);
   if (this->remuxing) {
-    bool raw = (codec == cereal::EncodeIndex::Type::BIG_BOX_LOSSLESS);
-    avformat_alloc_output_context2(&this->ofmt_ctx, NULL, raw ? "matroska" : NULL, this->vid_path.c_str());
+    const bool lossless = (codec == cereal::EncodeIndex::Type::BIG_BOX_LOSSLESS);
+
+    // The road and cabin cameras are stored in matroska whichever codec they carry.
+    // Their .hevc suffix is historical - the file has been a matroska container since
+    // the lossless path was added - so the name must not reach ffmpeg's name-based
+    // guess, which resolves .hevc to the raw HEVC muxer. That muxer tags the stream as
+    // HEVC and cannot carry the H.264 this host records. The qcam stream keeps the
+    // guess, which resolves qcamera.ts to mpegts.
+    const bool matroska = lossless || (strstr(filename, ".hevc") != nullptr);
+    avformat_alloc_output_context2(&this->ofmt_ctx, NULL, matroska ? "matroska" : NULL, this->vid_path.c_str());
     assert(this->ofmt_ctx);
 
     // set codec correctly. needed?
     assert(codec != cereal::EncodeIndex::Type::FULL_H_E_V_C);
-    const AVCodec *avcodec = avcodec_find_encoder(raw ? AV_CODEC_ID_FFVHUFF : AV_CODEC_ID_H264);
+    const AVCodec *avcodec = avcodec_find_encoder(lossless ? AV_CODEC_ID_FFVHUFF : AV_CODEC_ID_H264);
     assert(avcodec);
 
     this->codec_ctx = avcodec_alloc_context3(avcodec);
@@ -31,13 +40,13 @@ VideoWriter::VideoWriter(const char *path, const char *filename, bool remuxing, 
     this->codec_ctx->pix_fmt = AV_PIX_FMT_YUV420P;
     this->codec_ctx->time_base = (AVRational){ 1, fps };
 
-    if (codec == cereal::EncodeIndex::Type::BIG_BOX_LOSSLESS) {
+    if (lossless) {
       // without this, there's just noise
       int err = avcodec_open2(this->codec_ctx, avcodec, NULL);
       assert(err >= 0);
     }
 
-    this->out_stream = avformat_new_stream(this->ofmt_ctx, raw ? avcodec : NULL);
+    this->out_stream = avformat_new_stream(this->ofmt_ctx, lossless ? avcodec : NULL);
     assert(this->out_stream);
 
     int err = avio_open(&this->ofmt_ctx->pb, this->vid_path.c_str(), AVIO_FLAG_WRITE);

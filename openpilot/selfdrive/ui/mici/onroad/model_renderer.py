@@ -14,6 +14,13 @@ from openpilot.system.ui.lib.shader_polygon import draw_polygon, Gradient
 from openpilot.system.ui.widgets import Widget
 
 from openpilot.selfdrive.ui.sunnypilot.mici.onroad.model_renderer import LANE_LINE_COLORS_SP, ModelRendererSP
+from openpilot.selfdrive.ui.sunnypilot.onroad.road_markings import (
+  blindspot_barrier_quads,
+  lane_dash_segments,
+  lane_type_is_dashed,
+  project_blindspot_barrier,
+  project_lane_segments,
+)
 
 CLIP_MARGIN = 500
 MIN_DRAW_DISTANCE = 10.0
@@ -61,6 +68,7 @@ class ModelRenderer(Widget, ModelRendererSP):
     self._blend_filter = FirstOrderFilter(1.0, 0.25, 1 / gui_app.target_fps)
     self._prev_allow_throttle = True
     self._lane_line_probs = np.zeros(4, dtype=np.float32)
+    self._lane_draw_distance = MAX_DRAW_DISTANCE
     self._road_edge_stds = np.zeros(2, dtype=np.float32)
     self._lead_vehicles = [LeadVehicle(), LeadVehicle()]
     self._path_offset_z = HEIGHT_INIT[0]
@@ -83,7 +91,7 @@ class ModelRenderer(Widget, ModelRendererSP):
     self._clip_region = None
 
     self._counter = -1
-    self._camera_offset = ui_state.params.get("CameraOffset", return_default=True) if ui_state.active_bundle else 0.0
+    self._camera_offset = ui_state.params.get("CameraOffset", return_default=True)
 
     self._exp_gradient = Gradient(
       start=(0.0, 1.0),  # Bottom of path
@@ -105,7 +113,7 @@ class ModelRenderer(Widget, ModelRendererSP):
     sm = ui_state.sm
 
     if self._counter % 180 == 0:  # This runs at 60fps, so we query every 3 seconds
-      self._camera_offset = ui_state.params.get("CameraOffset", return_default=True) if ui_state.active_bundle else 0.0
+      self._camera_offset = ui_state.params.get("CameraOffset", return_default=True)
     self._counter += 1
 
     self._torque_filter.update(-ui_state.sm['carOutput'].actuatorsOutput.torque)
@@ -153,6 +161,9 @@ class ModelRenderer(Widget, ModelRendererSP):
     if ui_state.status != UIStatus.DISENGAGED:
       self._draw_lane_lines()
       self._draw_path(sm)
+      self.blendful.draw(self._rect)
+
+    self._draw_blindspots(sm)
 
     # if render_lead_indicator and radar_state:
     #   self._draw_lead_indicator()
@@ -190,6 +201,7 @@ class ModelRenderer(Widget, ModelRendererSP):
   def _update_model(self, lead, path_x_array):
     """Update model visualization data based on model message"""
     max_distance = np.clip(path_x_array[-1], MIN_DRAW_DISTANCE, MAX_DRAW_DISTANCE)
+    self._lane_draw_distance = max_distance
     max_idx = self._get_path_length_idx(self._lane_lines[0].raw_points[:, 0], max_distance)
 
     # Update lane lines using raw points
@@ -204,6 +216,8 @@ class ModelRenderer(Widget, ModelRendererSP):
     # Update road edges using raw points
     for road_edge in self._road_edges:
       road_edge.projected_points = self._map_line_to_polygon(road_edge.raw_points, line_width_factor, 0.0, max_idx)
+    # Lane-centre overlay from the Blendful telemetry; self-hides at zero trust.
+    self.blendful.update(self, max_idx)
 
     # Update path using raw points
     if lead and lead.present:
@@ -318,15 +332,31 @@ class ModelRenderer(Widget, ModelRendererSP):
     return color
 
   def _draw_lane_lines(self):
-    """Draw lane lines and road edges. Two closest lines should be green (lane line or road edges)."""
+    """Draw lane lines and road edges; ego-boundary types select solid/dashed."""
     offset = np.array([self._rect.x, self._rect.y], dtype=np.float32)
+    sm = ui_state.sm
+    cs_sp = None
+    if sm.valid.get('carStateSP') and sm.alive.get('carStateSP') and sm['carStateSP'].laneLineTypesValid:
+      cs_sp = sm['carStateSP']
+    left_code = int(cs_sp.leftLaneLine) if cs_sp is not None else -1
+    right_code = int(cs_sp.rightLaneLine) if cs_sp is not None else -1
 
     for i, lane_line in enumerate(self._lane_lines):
       if lane_line.projected_points.size == 0:
         continue
 
       color = self._get_ll_color(float(self._lane_line_probs[i]), i in (1, 2), i in (0, 1))
-      draw_polygon(self._rect, lane_line.projected_points + offset, color)
+      lane_code = left_code if i == 1 else right_code if i == 2 else -1
+      if lane_type_is_dashed(lane_code) and lane_line.raw_points.size:
+        half_width = (0.16 if i in (1, 2) else 0.12) * float(self._lane_line_probs[i])
+        segments = project_lane_segments(
+          lane_dash_segments(lane_line.raw_points, self._lane_draw_distance),
+          half_width, self._car_space_transform, self._clip_region,
+        )
+        for segment in segments:
+          draw_polygon(self._rect, segment + offset, color)
+      else:
+        draw_polygon(self._rect, lane_line.projected_points + offset, color)
 
     for i, road_edge in enumerate(self._road_edges):
       if road_edge.projected_points.size == 0:
@@ -335,6 +365,25 @@ class ModelRenderer(Widget, ModelRendererSP):
       # if closest lane lines are not confident, make road edges green
       color = self._get_ll_color(float(1.0 - self._road_edge_stds[i]), float(self._lane_line_probs[i + 1]) < 0.25, i == 0)
       draw_polygon(self._rect, road_edge.projected_points + offset, color)
+
+  def _draw_blindspots(self, sm):
+    """Draw CarrotPilot-style amber barriers on the side with BSD detected."""
+    if not (sm.valid.get('carState') and sm.valid.get('modelV2')):
+      return
+    car_state = sm['carState']
+    if not (car_state.leftBlindspot or car_state.rightBlindspot) or self._path.raw_points.shape[0] < 2:
+      return
+
+    max_idx = self._get_path_length_idx(self._path.raw_points[:, 0], 40.0)
+    offset = np.array([self._rect.x, self._rect.y], dtype=np.float32)
+    for active, shift in ((car_state.leftBlindspot, -1.7), (car_state.rightBlindspot, 1.7)):
+      if not active:
+        continue
+      polygon = project_blindspot_barrier(
+        self._path.raw_points[:max_idx + 1], shift, self._car_space_transform, self._clip_region,
+      )
+      for quad in blindspot_barrier_quads(polygon):
+        draw_polygon(self._rect, quad + offset, rl.Color(255, 215, 0, 150))
 
   def _draw_path(self, sm):
     """Draw path with dynamic coloring based on mode and throttle state."""

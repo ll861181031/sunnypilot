@@ -75,7 +75,10 @@ def is_dirty(cwd: str = BASEDIR) -> bool:
     if not is_prebuilt(cwd):
       # This is needed otherwise touched files might show up as modified
       try:
-        subprocess.check_call(["git", "update-index", "--refresh"], cwd=cwd)
+        subprocess.check_call(
+          ["git", "update-index", "--refresh"], cwd=cwd,
+          stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        )
       except subprocess.CalledProcessError:
         pass
 

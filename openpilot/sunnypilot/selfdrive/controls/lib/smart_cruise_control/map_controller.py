@@ -28,6 +28,13 @@ TARGET_OFFSET = 1.0  # seconds - This controls how soon before the curve you rea
                      # target velocity.
 
 
+# No road on earth is signed above this, so anything past it is bad map data, not a
+# speed limit. The 2026-11-06 map blob carried entries up to 1243.7 m/s (4477 km/h)
+# next to real ones, and the planner trusts the smallest value it finds.
+MAX_PLAUSIBLE_VELOCITY = 60.0  # m/s == 216 km/h
+CALC_PERIOD_S = 0.5
+
+
 def velocities_from_param(param: str, params: Params):
   if params is None:
     params = Params()
@@ -36,9 +43,26 @@ def velocities_from_param(param: str, params: Params):
   if json_str is None:
     return None
 
-  velocities = json.loads(json_str)
+  try:
+    velocities = json.loads(json_str)
+  except (TypeError, ValueError):
+    return None
+  if not isinstance(velocities, list):
+    return None
 
-  return velocities
+  # Drop entries that cannot be a speed limit instead of letting them reach the
+  # distance maths, where one absurd value silently poisons the whole target.
+  result = []
+  for v in velocities:
+    if not isinstance(v, dict):
+      continue
+    try:
+      velocity = float(v.get("velocity", 0.0))
+    except (TypeError, ValueError):
+      continue
+    if 0.0 < velocity <= MAX_PLAUSIBLE_VELOCITY:
+      result.append(v)
+  return result
 
 
 def calculate_accel(t, target_jerk, a_ego):
@@ -101,14 +125,27 @@ class SmartCruiseControlMap:
       self.enabled = self.params.get_bool("SmartCruiseControlMap")
 
   def update_calculations(self) -> None:
-    self.last_position = coordinate_from_param("LastGPSPosition", self.mem_params) or Coordinate(0.0, 0.0)
-    lat = self.last_position.latitude
-    lon = self.last_position.longitude
-
+    # Do NOT fall back to Coordinate(0.0, 0.0). That is the Gulf of Guinea, and the
+    # nearest map point to it can be any road on earth. The old fallback also made the
+    # `is None` guard below unreachable, because (0, 0) is never None -- on 2026-11-06
+    # the car was doing 102 km/h while this code produced a 58 km/h target from a stale
+    # position, so the planner sat on the -1.2 m/s^2 floor and braked continuously.
+    try:
+      self.last_position = coordinate_from_param("LastGPSPosition", self.mem_params)
+    except (TypeError, ValueError, KeyError):
+      self.last_position = None
     self.target_velocities = velocities_from_param("MapTargetVelocities", self.mem_params) or []
 
-    if self.last_position is None or self.target_velocities is None:
+    if self.last_position is None or not self.target_velocities:
+      # No position (no GPS fix) or no map data for it: clear any stale target so
+      # get_v_target_from_control() cannot keep commanding an old speed.
+      self.v_target = 0.0
+      self.target_lat = 0.0
+      self.target_lon = 0.0
       return
+
+    lat = self.last_position.latitude
+    lon = self.last_position.longitude
 
     min_dist = 1000
     min_idx = 0
@@ -251,7 +288,12 @@ class SmartCruiseControlMap:
     self.v_cruise = v_cruise
 
     self.update_params()
-    self.update_calculations()
+    # The map blob changes at most every few seconds; parsing and scanning it at
+    # the planner's 100 Hz rate is pure waste and makes a malformed Param fatal
+    # 100 times a second.
+    # frame starts at -1 so the first update always calculates.
+    if self.frame < 0 or self.frame % max(1, int(CALC_PERIOD_S / DT_MDL)) == 0:
+      self.update_calculations()
 
     self.is_enabled, self.is_active = self._update_state_machine()
 

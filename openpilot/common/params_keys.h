@@ -29,6 +29,10 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     {"CurrentBootlog", {PERSISTENT, STRING}},
     {"CurrentRoute", {CLEAR_ON_MANAGER_START | CLEAR_ON_ONROAD_TRANSITION, STRING}},
     {"DisableLogging", {CLEAR_ON_MANAGER_START | CLEAR_ON_ONROAD_TRANSITION, BOOL}},
+    {"DisableEncoderd", {PERSISTENT, BOOL, "0"}},
+    {"SimulateIgnition", {PERSISTENT, BOOL, "0"}},
+    {"SimulateNav", {PERSISTENT, BOOL, "0"}},
+    {"DisableUI", {PERSISTENT, BOOL, "0"}},
     {"DisablePowerDown", {PERSISTENT | BACKUP, BOOL}},
     {"DisableUpdates", {PERSISTENT | BACKUP, BOOL, "0"}},
     {"DisengageOnAccelerator", {PERSISTENT | BACKUP, BOOL, "0"}},
@@ -139,10 +143,18 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     {"ChestnutActive", {CLEAR_ON_MANAGER_START | CLEAR_ON_OFFROAD_TRANSITION | CLEAR_ON_IGNITION_ON, BOOL}},
     {"ChestnutLoading", {CLEAR_ON_MANAGER_START | CLEAR_ON_OFFROAD_TRANSITION | CLEAR_ON_IGNITION_ON, BOOL}},
     {"ChestnutModelError", {CLEAR_ON_MANAGER_START | CLEAR_ON_OFFROAD_TRANSITION | CLEAR_ON_IGNITION_ON, BOOL}},
+    // Written by modeld, read by the onroad UI to show that the wide camera is the
+    // model's second input right now. Runtime state, not a setting: it must not
+    // survive a restart, or the indicator would claim a camera that is not running.
+    {"WideCameraActive", {CLEAR_ON_MANAGER_START | CLEAR_ON_OFFROAD_TRANSITION | CLEAR_ON_IGNITION_ON, BOOL}},
     {"Version", {PERSISTENT, STRING}},
 
     // --- sunnypilot params --- //
+    // Predictive acceleration boost. Default on, matching upstream: the planner falls
+    // back to the gas-pedal-only AccelBoost when this is off or longitudinal is stock.
+    {"AccelBoostSP", {PERSISTENT | BACKUP, BOOL, "1"}},
     {"ApiCache_DriveStats", {PERSISTENT, JSON}},
+    {"LocalDriveStats", {PERSISTENT, JSON}},
     {"AutoLaneChangeBsmDelay", {PERSISTENT | BACKUP, BOOL, "0"}},
     {"AutoLaneChangeTimer", {PERSISTENT | BACKUP, INT, "0"}},
     {"BlinkerLateralReengageDelay", {PERSISTENT | BACKUP, INT, "0"}},  // seconds
@@ -162,6 +174,11 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     {"DeviceBootMode", {PERSISTENT | BACKUP, INT, "0"}},
     {"DevUIInfo", {PERSISTENT | BACKUP, INT, "0"}},
     {"EnableCopyparty", {PERSISTENT | BACKUP, BOOL}},
+    // No consumer in this repository: nothing starts or stops a GitHub runner, and
+    // neither the car UI nor the web mirror offers the switch any more (the sunnylink
+    // schema entry was removed on 2026-11-04). The key itself is kept so an existing
+    // value on a device still parses instead of being reported as unknown; remove it
+    // only after a migration that deletes the stored value.
     {"EnableGithubRunner", {PERSISTENT | BACKUP, BOOL}},
     {"GreenLightAlert", {PERSISTENT | BACKUP, BOOL, "0"}},
     {"GithubRunnerSufficientVoltage", {CLEAR_ON_MANAGER_START , BOOL}},
@@ -223,6 +240,13 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     {"SunnylinkCache_Roles", {PERSISTENT, STRING}},
     {"SunnylinkCache_Users", {PERSISTENT, STRING}},
     {"SunnylinkDongleId", {PERSISTENT, STRING}},
+    {"NavDestination", {PERSISTENT, JSON}},
+  // Navigation tab: saved places, recent destinations, and the optional AMap web key.
+  {"NavFavorites", {PERSISTENT, JSON}},
+  {"NavHistory", {PERSISTENT, JSON}},
+  {"NavAmapKey", {PERSISTENT, STRING}},
+  // Basemap archive for mapsd: a local .pmtiles path or an https:// URL.
+  {"NavTiles", {PERSISTENT, STRING}},
     {"SunnylinkdPid", {PERSISTENT, INT}},
     {"SunnylinkEnabled", {PERSISTENT, BOOL, "1"}},
     {"SunnylinkTempFault", {CLEAR_ON_MANAGER_START | CLEAR_ON_OFFROAD_TRANSITION, BOOL, "0"}},
@@ -295,4 +319,126 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     {"TorqueParamsOverrideEnabled", {PERSISTENT | BACKUP, BOOL, "0"}},
     {"TorqueParamsOverrideFriction", {PERSISTENT | BACKUP, FLOAT, "0.1"}},
     {"TorqueParamsOverrideLatAccelFactor", {PERSISTENT | BACKUP, FLOAT, "2.5"}},
+
+    // --- BYD Song Plus DM-i 23 ALT port: user-tunable settings --- //
+    // Knobs that would otherwise require editing source, exposed so the tuning
+    // can be changed from the car without a rebuild. Every entry uses 0 as
+    // "unset", so a fresh install behaves exactly like the hardcoded defaults
+    // and the porting tests keep covering the default path.
+    //
+    // BydSteerLeadMaxDeg: how far the commanded steering angle may lead the
+    // measured one at high speed, in 0.1 degree units. This is the bound that
+    // actually limits curve tracking (see the project conventions). The low-speed segment is
+    // deliberately NOT exposed: that is where the EPS reports
+    // TORQUE_TEMP_FAILED, and widening it is known to cause real disengagements.
+    {"BydSteerLeadMaxDeg", {PERSISTENT | BACKUP, INT, "0"}},
+    // BydSteerRateMax: steering rate ceiling in 0.1 degree per 100 Hz control
+    // cycle. The panda keeps its own table at exactly twice this value, so a
+    // value raised here must stay below half the panda envelope or every
+    // steering frame gets rejected.
+    {"BydSteerRateMax", {PERSISTENT | BACKUP, INT, "0"}},
+    // Camera focal length in pixels at the published width. Overrides the
+    // launcher environment variable only when non-zero.
+    {"BydCameraFocalPx", {PERSISTENT | BACKUP, INT, "0"}},
+    {"BydCameraWideFocalPx", {PERSISTENT | BACKUP, INT, "0"}},
+    // Horizontal field of view in 0.1 degree units, the form the driver can
+    // actually measure: park facing a wall, note where the left and right frame
+    // edges land, then HFOV = 2*atan(span / (2 * distance)). When non-zero this
+    // WINS over the focal length above, because it is the measured quantity and
+    // the focal is only derived from it - see the comment in camera.py.
+    {"BydCameraFovTenthsDeg", {PERSISTENT | BACKUP, INT, "0"}},
+    {"BydCameraWideFovTenthsDeg", {PERSISTENT | BACKUP, INT, "0"}},
+    // Diagonal field of view in 0.1 degree units. This is the number printed on
+    // a lens or camera datasheet, so it is the one a driver can copy across
+    // without doing any trigonometry: f_px = diag_px / (2*tan(DFOV/2)), and the
+    // physical focal length cancels out of it. Ranks below a measured
+    // horizontal field of view and above the focal + sensor pair, because the
+    // pair needs an assumption about the sensor aspect ratio that this does not.
+    {"BydCameraDiagFovTenthsDeg", {PERSISTENT | BACKUP, INT, "0"}},
+    {"BydCameraWideDiagFovTenthsDeg", {PERSISTENT | BACKUP, INT, "0"}},
+    // Physical focal length in 0.1 mm units. Useless on its own: turning mm into
+    // pixels needs the sensor size as well (f_px = f_mm * width_px /
+    // sensor_width_mm), so this is only consulted when the matching sensor width
+    // below is also set. Both spec-sheet numbers are approximate - on this lens
+    // the datasheet pair (8 mm, 1/2.7 inch) resolves to 2040 px while the
+    // measured field of view resolves to 1864 px, a 9% disagreement - which is
+    // exactly why the measured field of view outranks them.
+    {"BydCameraFocalTenthMm", {PERSISTENT | BACKUP, INT, "0"}},
+    {"BydCameraSensorWidthTenthMm", {PERSISTENT | BACKUP, INT, "0"}},
+    {"BydCameraWideFocalTenthMm", {PERSISTENT | BACKUP, INT, "0"}},
+    {"BydCameraWideSensorWidthTenthMm", {PERSISTENT | BACKUP, INT, "0"}},
+    // BydWideCamCurveAngleDeg is gone: the wide-camera curve gate was measured and
+    // dropped (modeld.py:74). Do not add it back - the wide input is continuous
+    // whenever a second stream exists, and a switch for it would change nothing.
+    // The rest of the BYD knobs that used to live only in source. Every one of
+    // them uses 0 as "leave the ported default alone", so an untouched install
+    // behaves exactly like the code did before this page existed, and a mistap
+    // can always be undone by returning to 0.
+    //
+    // Split into the group that only shapes the steering envelope and the group
+    // that decides when openpilot hands control back to the driver. The second
+    // group is genuinely safety relevant: too high a driver-torque threshold and
+    // the wheel fights the driver instead of yielding.
+    {"BydSteerAngleMaxTenths", {PERSISTENT | BACKUP, INT, "0"}},       // 0.1 deg, absolute angle cap
+    {"BydOverrideTorqueRelease", {PERSISTENT | BACKUP, INT, "0"}},     // raw torque units
+    {"BydReleaseStableFrames", {PERSISTENT | BACKUP, INT, "0"}},       // 100 Hz cycles
+    {"BydRearmAngleErrorTenths", {PERSISTENT | BACKUP, INT, "0"}},     // 0.1 deg
+    {"BydEpsRearmHoldMs", {PERSISTENT | BACKUP, INT, "0"}},            // ms
+    {"BydEpsRearmTimeoutMs", {PERSISTENT | BACKUP, INT, "0"}},         // ms
+    {"BydDriverTorqueBase", {PERSISTENT | BACKUP, INT, "0"}},          // raw torque units
+    {"BydDriverTorqueEpsMargin", {PERSISTENT | BACKUP, INT, "0"}},     // raw torque units
+    {"BydDriverTorqueFactorHundredths", {PERSISTENT | BACKUP, INT, "0"}},  // 0.01
+    {"BydDriverTorqueSamples", {PERSISTENT | BACKUP, INT, "0"}},       // 100 Hz cycles
+    {"BydPandaTxRejectLimit", {PERSISTENT | BACKUP, INT, "0"}},        // consecutive rejects
+    {"BydPandaTxRejectDecay", {PERSISTENT | BACKUP, INT, "0"}},        // 100 Hz cycles
+    {"BydPandaUnavailableLimit", {PERSISTENT | BACKUP, INT, "0"}},     // 100 Hz cycles
+    {"BydPandaFaultClearCycles", {PERSISTENT | BACKUP, INT, "0"}},     // 100 Hz cycles
+    {"BydBlinkerHoldCycles", {PERSISTENT | BACKUP, INT, "0"}},         // 100 Hz cycles
+    // BydHmaRequest: high-beam request put on 0x2B4 (ADAS_HMA_STATE_HAL, 3 bits).
+    // 0 = off / stock value; 1..7 are forwarded verbatim. Non-zero also makes the
+    // panda suppress the stock 0x2B4 so ours is the only source, with a 200 ms
+    // handoff back to stock when the host stops sending.
+    {"BydHmaRequest", {PERSISTENT | BACKUP, INT, "0"}},
+    // BydLeadBoundTable: the learned lead-bound curve, 'km/h:deg,...' pairs. Written
+    // by the lead-bound learner and validated in opendbc/car/byd/values.py before
+    // anything uses it (unsorted, widening, or out-of-envelope tables are dropped).
+    // Empty means "use the shipped table", which is what a fresh install has.
+    {"BydLeadBoundTable", {PERSISTENT | BACKUP, STRING}},
+    // BydLeadLearnMode: 0 = unset (the settings page's "default", which is shadow),
+    // 1 = off, 2 = shadow (record only, the car is untouched), 3 = apply. Shadow is
+    // the default because a raise can only be validated on a live drive, not in a
+    // replay. The 0 slot is the page's convention for every knob on this panel.
+    {"BydLeadLearnMode", {PERSISTENT | BACKUP, INT, "0"}},
+    // BydLeadBoundShadow: what the learner WOULD set. Written every 60 s of driving
+    // in shadow mode; nothing reads it for control.
+    {"BydLeadBoundShadow", {PERSISTENT | BACKUP, STRING}},
+    {"BydCarSpecsSteerRatioTenths", {PERSISTENT | BACKUP, INT, "0"}},  // 0.1, seed only
+    {"BydCarSpecsStiffnessHundredths", {PERSISTENT | BACKUP, INT, "0"}},  // 0.01, seed only
+    // Fork-local: enable the informational YOLO detector process (yolod). Off by
+    // default. yolod only publishes "yoloObjects" on msgq for the console and for
+    // debugging; nothing in the control loop reads it.
+    {"YoloEnabled", {PERSISTENT | BACKUP, BOOL}},
+    // Fork-local: enable the optional lane-marking classifier (laned). Off by
+    // default; laned publishes "laneLineTypes" and fills CarStateSP lane types.
+    {"LaneLineDetectionEnabled", {PERSISTENT | BACKUP, BOOL}},
+    // Fork-local: 0 disabled, 1 block solid/unknown, 2 solid/unknown need torque.
+    {"LaneLineCheck", {PERSISTENT | BACKUP, INT, "0"}},
+    // Fork-local: nudge modeld's planned curvature toward the lane centre. Off by
+    // default. Read by modeld, so a change takes effect on the next model frame.
+    {"Blendful", {PERSISTENT | BACKUP, BOOL}},
+
+    // Fork-local: keep the e2e model's "straight-line stop" prior out of the brake
+    // candidate pool. Off by default because the same signature also appears when
+    // stopping for a red light with no queue ahead. See longitudinal_planner.py.
+    {"E2ECrosswalkGuard", {PERSISTENT | BACKUP, BOOL}},
+    // Fork-local: brake to a stop for a red/yellow light over ego's lane, and
+    // release the brake when it turns green. Off by default - it can command a
+    // stop the driver did not ask for, so it is opt-in like the crosswalk guard.
+    {"TrafficLightStop", {PERSISTENT | BACKUP, BOOL}},
+    // How far before the lamp to aim the stop, in metres. 5 m is a proxy: in China
+    // the stop line sits at the crosswalk and the lamp is mounted at or just past
+    // it, so aiming 5 m short puts the car before the line. Tune this after the
+    // first drive rather than editing code - it is the one number that depends on
+    // the junctions you actually drive through.
+    {"TrafficLightStopOffset", {PERSISTENT | BACKUP, FLOAT, "5.0"}},
 };

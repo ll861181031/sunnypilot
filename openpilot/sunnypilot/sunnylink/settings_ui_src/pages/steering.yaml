@@ -32,7 +32,6 @@ sections:
       description: 'Note: For vehicles without LFA/LKAS button, disabling this will prevent lateral control engagement.'
       enablement:
       - $ref: '#/macros/offroad'
-      - $ref: '#/macros/mads_full_platforms'
     - key: MadsUnifiedEngagementMode
       widget: toggle
       title: Unified Engagement Mode (UEM)
@@ -40,7 +39,6 @@ sections:
         engaged via UEM, it will remain engaged until it is manually disabled via the MADS button or car shut off.'
       enablement:
       - $ref: '#/macros/offroad'
-      - $ref: '#/macros/mads_full_platforms'
     - key: MadsSteeringMode
       widget: multiple_button
       title: Steering Mode on Brake Pedal
@@ -48,12 +46,8 @@ sections:
       options:
       - value: 0
         label: Remain Active
-        enablement:
-        - $ref: '#/macros/mads_full_platforms'
       - value: 1
         label: Pause
-        enablement:
-        - $ref: '#/macros/mads_full_platforms'
       - value: 2
         label: Disengage
       enablement:

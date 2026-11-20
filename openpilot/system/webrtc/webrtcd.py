@@ -2,6 +2,7 @@
 
 from abc import abstractmethod
 from collections.abc import Callable
+from dataclasses import fields
 import os
 import socket
 import time
@@ -21,6 +22,7 @@ from typing import Any
 from openpilot.system.webrtc.helpers import StreamRequestBody
 from openpilot.system.webrtc.schema import generate_field
 from openpilot.common.params import Params
+from openpilot.common.camera_config import driver_camera_enabled
 from openpilot.common.swaglog import cloudlog
 from openpilot.cereal import messaging, log
 
@@ -232,6 +234,8 @@ class StreamSession:
     from teleoprtc.builder import WebRTCAnswerBuilder
 
     self.identifier = str(uuid.uuid4())
+    self.client_id = body.client_id
+    self.created = time.monotonic()
     self.params = Params()
     builder = WebRTCAnswerBuilder(body.sdp, bind_address=_default_route_ip())
 
@@ -404,8 +408,45 @@ def _json_response(obj: Any, status: int = 200) -> tuple[int, bytes, str]:
   return (status, json.dumps(obj).encode(), "application/json; charset=utf-8")
 
 
+# How long a session may live without a receiver report before it can be reclaimed.
+# The phone client runs in a container behind NAT, so a missing RR is not evidence
+# that nobody is watching - the test and the implementation read this one value.
+_SESSION_STALE_GRACE_S = 60.0
+
+
 def _text_response(text: str, status: int = 200) -> tuple[int, bytes, str]:
   return (status, text.encode(), "text/plain; charset=utf-8")
+
+
+def _session_stale(session) -> bool:
+  """A session with no client for >60 s must not block a reconnect forever.
+
+  There used to be an `age < 10` early return here that the 60 s grace below made
+  unreachable, while this docstring still claimed 10 s - and the test written from
+  that docstring failed forever against the real threshold. One number, one place.
+  """
+  age = time.monotonic() - getattr(session, "created", 0.0)
+  if age < _SESSION_STALE_GRACE_S:
+    return False
+  try:
+    stats = session.stream.get_receiver_report_stats()
+  except Exception:
+    return True
+  return not stats
+
+
+def _raise_aioice_consent_threshold() -> None:
+  try:
+    import sys
+    mod = sys.modules.get("aioice.ice")
+    if mod is None:
+      import aiortc  # noqa: F401
+      mod = sys.modules.get("aioice.ice")
+    if mod is not None and getattr(mod, "CONSENT_FAILURES", 0) < 10 ** 6:
+      mod.CONSENT_FAILURES = 10 ** 6
+      logging.getLogger("webrtcd").info("aioice consent threshold raised for container NAT")
+  except Exception:
+    logging.getLogger("webrtcd").exception("failed to raise aioice consent threshold")
 
 
 async def handle_get_stream(state: ServerState, raw_body: bytes, content_type: str) -> tuple[int, bytes, str]:
@@ -413,23 +454,42 @@ async def handle_get_stream(state: ServerState, raw_body: bytes, content_type: s
     return _json_response({"error": "unsupported media type"}, status=415)
 
   stream_dict = state.streams
-  body = StreamRequestBody(**json.loads(raw_body))
+  _raise_aioice_consent_threshold()
+  allowed = {f.name for f in fields(StreamRequestBody)}
+  payload = json.loads(raw_body)
+  body = StreamRequestBody(**{k: v for k, v in payload.items() if k in allowed})
+
+  if 'driver' in body.cameras and not driver_camera_enabled():
+    return _json_response({"error": "driver camera is disabled"}, status=403)
 
   async with state.stream_lock:
-    # don't remove existing connection on prewarm request
-    enabled = any(s.run_task and not s.run_task.done() and s.enabled for s in stream_dict.values())
-    if enabled and not body.enabled:
+    active = [s for s in stream_dict.values() if s.run_task and not s.run_task.done()]
+    if active and not body.enabled:
       return _json_response({"error": "busy", "message": "someone else is connected."})
+    if active and body.enabled:
+      same_client = bool(body.client_id) and any(
+        getattr(s, "client_id", "") == body.client_id for s in active)
+      all_stale = all(_session_stale(s) for s in active)
+      if not same_client and not body.takeover and not all_stale:
+        return _json_response(
+          {"code": "carrot_vision_busy",
+           "error": "Road camera is active on another client"}, status=409)
 
+    replaced = []
     for sid, s in list(stream_dict.items()):
       if s.run_task and not s.run_task.done():
-        try:
-          ch = s.stream.get_messaging_channel()
-          ch.send(json.dumps({"type": "disconnect", "data": "Another device has connected, closing this session."}))
-        except Exception:
-          pass
+        same = bool(body.client_id) and getattr(s, "client_id", "") == body.client_id
+        replaced.append({"id": sid, "same_client": same})
+        if not same:
+          try:
+            ch = s.stream.get_messaging_channel()
+            ch.send(json.dumps({"type": "disconnect", "data": "Another device has connected, closing this session."}))
+          except Exception:
+            pass
       await s.stop()
       stream_dict.pop(sid, None)
+    if replaced:
+      cloudlog.event("webrtcd.session.replaced", replaced=replaced, new_client=body.client_id)
 
     session = StreamSession(body)
     stream_dict[session.identifier] = session
@@ -597,7 +657,8 @@ def prewarm_stream_session_imports() -> None:
 
 
 def webrtcd_thread(host: str, port: int):
-  logging.basicConfig(level=logging.INFO, handlers=[logging.StreamHandler()])
+  _level = getattr(logging, os.environ.get("WEBRTCD_LOG_LEVEL", "INFO").upper(), logging.INFO)
+  logging.basicConfig(level=_level, handlers=[logging.StreamHandler()])
   prewarm_start = time.monotonic()
   prewarm_stream_session_imports()
   prewarm_end = time.monotonic()
@@ -637,7 +698,8 @@ def webrtcd_thread(host: str, port: int):
 
 def main():
   parser = argparse.ArgumentParser(description="WebRTC daemon")
-  parser.add_argument("--host", type=str, default="127.0.0.1", help="Host to listen on")
+  # CPlink's phone calls http://HOST:5001/stream; loopback-only made 5001 unreachable.
+  parser.add_argument("--host", type=str, default="0.0.0.0", help="Host to listen on")
   parser.add_argument("--port", type=int, default=5001, help="Port to listen on")
   args = parser.parse_args()
 

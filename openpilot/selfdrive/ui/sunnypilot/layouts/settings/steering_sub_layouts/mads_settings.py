@@ -7,9 +7,6 @@ See the LICENSE.md file in the root directory for more details.
 from collections.abc import Callable
 import pyray as rl
 
-from opendbc.sunnypilot.car.tesla.values import MadsScreenButtonType, TeslaFlagsSP
-from openpilot.selfdrive.ui.ui_state import ui_state
-from openpilot.sunnypilot.mads.helpers import MadsSteeringModeOnBrake
 from openpilot.system.ui.lib.multilang import tr, tr_noop
 from openpilot.system.ui.widgets import Widget
 from openpilot.system.ui.widgets.network import NavButton
@@ -27,12 +24,6 @@ MADS_UNIFIED_ENGAGEMENT_MODE_BASE_DESC = "{engage}<br><h4>{note}</h4>".format(
   engage=tr("Engage lateral and longitudinal control with cruise control engagement."),
   note=tr("Note: Once lateral control is engaged via UEM, it will remain engaged until it is manually disabled via the MADS button or car shut off."),
 )
-
-STATUS_CHECK_COMPATIBILITY = tr("Start the vehicle to check vehicle compatibility.")
-DEFAULT_TO_OFF = tr("This feature defaults to OFF, and does not allow selection due to vehicle limitations.")
-DEFAULT_TO_ON = tr("This feature defaults to ON, and does not allow selection due to vehicle limitations.")
-STATUS_DISENGAGE_ONLY = tr("This platform only supports Disengage mode due to vehicle limitations.")
-
 
 class MadsSettingsLayout(Widget):
   def __init__(self, back_btn_callback: Callable):
@@ -83,25 +74,6 @@ class MadsSettingsLayout(Widget):
   def show_event(self):
     self._scroller.show_event()
 
-  @staticmethod
-  def _mads_limited_settings() -> bool:
-    brand = ""
-    if ui_state.is_offroad():
-      bundle = ui_state.params.get("CarPlatformBundle")
-      if bundle:
-        brand = bundle.get("brand", "")
-    if not brand:
-      brand = ui_state.CP.brand if ui_state.CP is not None else ""
-
-    if brand == "rivian":
-      return True
-    elif brand == "tesla":
-      if ui_state.CP_SP is None or not ui_state.CP_SP.flags & TeslaFlagsSP.HAS_VEHICLE_BUS:
-        return True
-      screen_button = int(ui_state.params.get("TeslaMadsScreenButton", return_default=True))
-      return screen_button == MadsScreenButtonType.OFF
-    return False
-
   def _update_steering_mode_description(self, button_index: int):
     base_desc = tr("Choose how Automatic Lane Centering (ALC) behaves after the brake pedal is manually pressed in sunnypilot.")
     result = base_desc + "<br><br>"
@@ -113,28 +85,11 @@ class MadsSettingsLayout(Widget):
 
   def _update_toggles(self):
     self._update_steering_mode_description(self._steering_mode.action_item.get_selected_button())
-    if self._mads_limited_settings():
-      ui_state.params.remove("MadsMainCruiseAllowed")
-      ui_state.params.put_bool("MadsUnifiedEngagementMode", True)
-      ui_state.params.put("MadsSteeringMode", MadsSteeringModeOnBrake.DISENGAGE)
+    self._main_cruise_toggle.action_item.set_enabled(True)
+    self._main_cruise_toggle.set_description(MADS_MAIN_CRUISE_BASE_DESC)
 
-      self._main_cruise_toggle.action_item.set_enabled(False)
-      self._main_cruise_toggle.action_item.set_state(False)
-      self._main_cruise_toggle.set_description("<b>" + DEFAULT_TO_OFF + "</b><br>" + MADS_MAIN_CRUISE_BASE_DESC)
+    self._unified_engagement_toggle.action_item.set_enabled(True)
+    self._unified_engagement_toggle.set_description(MADS_UNIFIED_ENGAGEMENT_MODE_BASE_DESC)
 
-      self._unified_engagement_toggle.action_item.set_enabled(False)
-      self._unified_engagement_toggle.action_item.set_state(True)
-      self._unified_engagement_toggle.set_description("<b>" + DEFAULT_TO_ON + "</b><br>" + MADS_UNIFIED_ENGAGEMENT_MODE_BASE_DESC)
-
-      self._steering_mode.set_description(STATUS_DISENGAGE_ONLY)
-      self._steering_mode.action_item.set_selected_button(MadsSteeringModeOnBrake.DISENGAGE)
-      self._steering_mode.action_item.set_enabled_buttons({MadsSteeringModeOnBrake.DISENGAGE})
-    else:
-      self._main_cruise_toggle.action_item.set_enabled(True)
-      self._main_cruise_toggle.set_description(MADS_MAIN_CRUISE_BASE_DESC)
-
-      self._unified_engagement_toggle.action_item.set_enabled(True)
-      self._unified_engagement_toggle.set_description(MADS_UNIFIED_ENGAGEMENT_MODE_BASE_DESC)
-
-      self._steering_mode.action_item.set_enabled(True)
-      self._steering_mode.action_item.set_enabled_buttons(None)
+    self._steering_mode.action_item.set_enabled(True)
+    self._steering_mode.action_item.set_enabled_buttons(None)

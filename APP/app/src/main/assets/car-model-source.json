@@ -1,0 +1,51 @@
+{
+  "modelName": "2024 比亚迪宋PLUS DM-i（修复版）",
+  "credit": "Ddiaz Design · CC-BY-NC-SA-4.0（不可商用）",
+  "sourceArchive": {
+    "fileName": "3D 示例23宋plus-修复版V2.zip",
+    "sha256": "b50daa9328f5473ad4f1a3ad5142273d0044bd6c8db3c7e0ce3d05327aa57e0a"
+  },
+  "sourceGlb": {
+    "sha256": "4b2ffab4cc240ad6b8d0d958da9038db5a75530480cd6c12c063d42b6cec0b87",
+    "bytes": 22497496
+  },
+  "exportGlb": {
+    "sha256": "5eb21312ff8f5c6c40bfa103bdf32bc7b35c19d45ec303b498612d7b0bfe0e49",
+    "bytes": 22497492
+  },
+  "format": 6,
+  "materialAliases": {
+    "turn_LFL": "turn_L",
+    "turn_LFR": "turn_R"
+  },
+  "geometry": {
+    "meshes": 51,
+    "nodes": 51,
+    "primitives": 118,
+    "vertices": 538436,
+    "triangles": 179890,
+    "materials": 42,
+    "embeddedImages": 20
+  },
+  "importer": "tools/car-render/import_songplus_v2.py",
+  "importBehavior": [
+    "Read ZIP members by unique basename; never execute archive JavaScript.",
+    "Preserve the original GLB; patch only the two audited turn-material aliases in the export copy.",
+    "Keep the app's white paint; ignore the webpage's red presentation preference.",
+    "Export UVs, base-color images, explicit material flags, authored normals and configured parts.",
+    "Use 16-bit-safe geometry chunks; approximate materials in the existing Blinn-Phong renderer.",
+    "Expose head geometry as v6 role 8 for user-selected default presentation headlights and road beams; this does not report the real vehicle headlight switch.",
+    "Do not synthesize unavailable headlight or rear-fog telemetry; rear fog remains unlit."
+  ],
+  "license": {
+    "originalFilename": "LICENSE-car.txt",
+    "originalModelTitle": "2016 Exotic Rides W70",
+    "modelTitleMismatch": true,
+    "note": "The archive's license title/source URL names a different model; original text is preserved for provenance. The GLB credit declares Ddiaz Design and CC-BY-NC-SA-4.0 (non-commercial)."
+  },
+  "output": {
+    "fileName": "car.bin",
+    "bytes": 11138323,
+    "sha256": "df7d06d61543b5a700123ddeec1e9f909e660b9c3ffed2e84c1ddfa45eee9b75"
+  }
+}

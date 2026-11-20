@@ -3,14 +3,26 @@ from opendbc.car.structs import car
 from opendbc.car import DT_CTRL, structs
 from opendbc.car.car_helpers import interfaces
 from opendbc.car.interfaces import MAX_CTRL_SPEED
-from opendbc.car.toyota.values import ToyotaFlags
 
 from openpilot.selfdrive.selfdrived.events import Events
 
 ButtonType = structs.CarState.ButtonEvent.Type
 GearShifter = structs.CarState.GearShifter
 EventName = log.OnroadEvent.EventName
-NetworkLocation = structs.CarParams.NetworkLocation
+
+# Only a brake applied to a car that is still moving makes the stock ACC release.
+# Measured over 80 recorded segments: of 21 cruise-disengage edges, 15 were
+# brake-triggered and the stock ACC reported Passive. Every multi-second
+# unconfirmed-handoff episode instead started from a car the stock ACC had already
+# stopped - braking there is redundant, the ECU stays in its hold state, and the
+# only clear condition (cruiseState.enabled turning False) never arrives. Latching
+# in that case turned a redundant pedal press into a permanent NO_ENTRY alert that
+# blocked re-engagement until the driver cancelled cruise manually.
+BYD_CANCEL_LATCH_MIN_SPEED_MS = 0.3
+# The latch exists to keep an unconfirmed handoff visible, not to outlive the drive.
+# If the stock ECU never reports Passive, release it after this long so re-engagement
+# is not blocked until the driver manually cancels cruise.
+BYD_CANCEL_LATCH_TIMEOUT_S = 5.0
 
 
 class CarEvents:
@@ -18,81 +30,52 @@ class CarEvents:
     self.CP = CP
 
     self.steering_unpressed = 0
-    self.low_speed_alert = False
     self.no_steer_warning = False
     self.silent_steer_warning = True
+    self.byd_longitudinal_seen = False
+    self.byd_cancel_pending = False
+    self.byd_cancel_pending_frames = 0
+    self.byd_resume_wait_frames = 0
 
   def update(self, CS: car.CarState, CS_prev: car.CarState, CC: car.CarControl):
-    if self.CP.brand in ('body', 'mock'):
+    if self.CP.brand == 'mock':
       return Events()
 
     events = self.create_common_events(CS, CS_prev)
 
-    if self.CP.brand == 'chrysler':
-      # Low speed steer alert hysteresis logic
-      if self.CP.minSteerSpeed > 0. and CS.vEgo < (self.CP.minSteerSpeed + 0.5):
-        self.low_speed_alert = True
-      elif CS.vEgo > (self.CP.minSteerSpeed + 1.):
-        self.low_speed_alert = False
-      if self.low_speed_alert:
-        events.add(EventName.belowSteerSpeed)
+    if self.CP.brand == 'byd' and self.CP.openpilotLongitudinalControl:
+      valid = CS.canValid and not CS.canTimeout
+      if valid and not CS.cruiseState.enabled:
+        self.byd_cancel_pending = False
+        self.byd_cancel_pending_frames = 0
+        self.byd_longitudinal_seen = False
+      elif self.byd_longitudinal_seen and CC.cruiseControl.cancel:
+        # See BYD_CANCEL_LATCH_MIN_SPEED_MS: a brake on a car the stock ACC has
+        # already stopped does not release it, so there is no handoff to confirm.
+        if abs(CS.vEgoRaw) >= BYD_CANCEL_LATCH_MIN_SPEED_MS:
+          if not self.byd_cancel_pending:
+            self.byd_cancel_pending_frames = 0
+          self.byd_cancel_pending = True
+          self.byd_longitudinal_seen = False
+      if self.byd_cancel_pending:
+        # No verified stock cancel command is available. Keep the unconfirmed
+        # handoff visible until fresh CAN feedback confirms ACC has disengaged,
+        # but do not let it block re-engagement forever if the ECU never does.
+        self.byd_cancel_pending_frames += 1
+        if self.byd_cancel_pending_frames > int(BYD_CANCEL_LATCH_TIMEOUT_S / DT_CTRL):
+          self.byd_cancel_pending = False
+          self.byd_cancel_pending_frames = 0
+        else:
+          events.add(EventName.stockAccStillActive)
+      if valid and CS.cruiseState.enabled and CC.enabled and CC.longActive and not CC.cruiseControl.cancel and not self.byd_cancel_pending:
+        self.byd_longitudinal_seen = True
 
-    elif self.CP.brand == 'honda':
-      if self.CP.pcmCruise and CS.vEgo < self.CP.minEnableSpeed:
-        events.add(EventName.belowEngageSpeed)
-
-      if self.CP.pcmCruise:
-        # we engage when pcm is active (rising edge)
-        if CS.cruiseState.enabled and not CS_prev.cruiseState.enabled:
-          events.add(EventName.pcmEnable)
-        elif not CS.cruiseState.enabled and (CC.actuators.accel >= 0. or not self.CP.openpilotLongitudinalControl):
-          # it can happen that car cruise disables while comma system is enabled: need to
-          # keep braking if needed or if the speed is very low
-          if CS.vEgo < self.CP.minEnableSpeed + 2.:
-            # non loud alert if cruise disables below 25mph as expected (+ a little margin)
-            events.add(EventName.speedTooLow)
-          else:
-            events.add(EventName.cruiseDisabled)
-      if self.CP.minEnableSpeed > 0 and CS.vEgo < 0.001:
-        events.add(EventName.manualRestart)
-
-      if CS.brakeHoldActive and CS.blockPcmEnable: # set by Nidec Hybrid which cannot resume from brakehold
-        events.add(EventName.belowEngageSpeed)
-
-    elif self.CP.brand == 'toyota':
-      # TODO: when we check for unexpected disengagement, check gear not S1, S2, S3
-      if self.CP.openpilotLongitudinalControl:
-        # Only can leave standstill when planner wants to move
-        if CS.cruiseState.standstill and not CS.brakePressed and (CC.cruiseControl.resume or self.CP.flags & ToyotaFlags.HYBRID.value):
-          events.add(EventName.resumeRequired)
-        if CS.vEgo < self.CP.minEnableSpeed:
-          events.add(EventName.belowEngageSpeed)
-          if CC.actuators.accel > 0.3:
-            # some margin on the actuator to not false trigger cancellation while stopping
-            events.add(EventName.speedTooLow)
-          if CS.vEgo < 0.001:
-            # while in standstill, send a user alert
-            events.add(EventName.manualRestart)
-
-    elif self.CP.brand == 'gm':
-      # Enabling at a standstill with brake is allowed
-      # TODO: verify 17 Volt can enable for the first time at a stop and allow for all GMs
-      if CS.vEgo < self.CP.minEnableSpeed and not (CS.standstill and CS.brakePressed and
-                                                   self.CP.networkLocation == NetworkLocation.fwdCamera):
-        events.add(EventName.belowEngageSpeed)
-      if CS.cruiseState.standstill:
+      resume_waiting = (valid and CC.enabled and CC.longActive and CC.cruiseControl.resume and
+                        abs(CS.vEgoRaw) < 0.3 and CC.actuators.accel <= 0.0 and
+                        not CS.gasPressed and not CS.brakePressed)
+      self.byd_resume_wait_frames = self.byd_resume_wait_frames + 1 if resume_waiting else 0
+      if self.byd_resume_wait_frames >= int(0.2 / DT_CTRL):
         events.add(EventName.resumeRequired)
-
-    elif self.CP.brand == 'volkswagen':
-      if self.CP.openpilotLongitudinalControl:
-        if CS.vEgo < self.CP.minEnableSpeed + 0.5:
-          events.add(EventName.belowEngageSpeed)
-        if CC.enabled and CS.vEgo < self.CP.minEnableSpeed:
-          events.add(EventName.speedTooLow)
-
-      # TODO: this needs to be implemented generically in carState struct
-      # if CC.eps_timer_soft_disable_alert:
-      #   events.add(EventName.steerTimeLimit)
 
     return events
 
@@ -100,12 +83,6 @@ class CarEvents:
     events = Events()
 
     CI = interfaces[self.CP.carFingerprint]
-    # TODO: cleanup the honda-specific logic
-    pcm_enable = self.CP.pcmCruise and self.CP.brand != 'honda'
-    # TODO: on some hyundai cars, the cancel button is also the pause/resume button,
-    # so only use it for cancel when running openpilot longitudinal
-    allow_button_cancel = self.CP.brand != 'hyundai'
-
     if CS.doorOpen:
       events.add(EventName.doorOpen)
     if CS.seatbeltUnlatched:
@@ -159,7 +136,7 @@ class CarEvents:
     for b in CS.buttonEvents:
       # Disable on rising and falling edge of cancel for both stock and OP long
       # TODO: only check the cancel button with openpilot longitudinal on all brands to match panda safety
-      if b.type == ButtonType.cancel and (allow_button_cancel or not self.CP.pcmCruise):
+      if b.type == ButtonType.cancel:
         events.add(EventName.buttonCancel)
 
     # Handle permanent and temporary steering faults
@@ -184,7 +161,7 @@ class CarEvents:
 
     # we engage when pcm is active (rising edge)
     # enabling can optionally be blocked by the car interface
-    if pcm_enable:
+    if self.CP.pcmCruise:
       if CS.cruiseState.enabled and not CS_prev.cruiseState.enabled and not CS.blockPcmEnable:
         events.add(EventName.pcmEnable)
       elif not CS.cruiseState.enabled:

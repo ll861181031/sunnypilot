@@ -1,0 +1,14 @@
+{
+  "labels": [
+    "red",
+    "yellow",
+    "green",
+    "off",
+    "wait_on"
+  ],
+  "height": 72,
+  "width": 48,
+  "mean": 0.5,
+  "std": 0.5,
+  "input": "NCHW float32, RGB, /255 then (x-mean)/std"
+}

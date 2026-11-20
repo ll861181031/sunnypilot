@@ -9,7 +9,7 @@ import numpy as np
 from openpilot.cereal import log, messaging
 from opendbc.car.structs import car
 from opendbc.car.car_helpers import interfaces
-from opendbc.car.honda.values import CAR as HONDA
+from opendbc.car.mock.values import CAR as MOCK
 from opendbc.car.vehicle_model import VehicleModel
 from openpilot.common.params import Params
 from openpilot.common.realtime import DT_CTRL
@@ -28,7 +28,7 @@ def _make_controller(enhanced=False, nnlc=False):
   params.put_bool("LateralJerkTorqueController", enhanced, block=True)
   params.put_bool("NeuralNetworkLateralControl", nnlc, block=True)
 
-  car_name = HONDA.HONDA_CIVIC
+  car_name = MOCK.MOCK
   CarInterface = interfaces[car_name]
   CP = CarInterface.get_non_essential_params(car_name)
   CP_SP = CarInterface.get_non_essential_params_sp(CP, car_name)

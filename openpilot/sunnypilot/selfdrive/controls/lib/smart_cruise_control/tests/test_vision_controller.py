@@ -161,7 +161,9 @@ class TestSmartCruiseControlVision(OpenpilotTestCase):
       pred_lat_accels = np.full(n, np.float32(val), dtype=np.float32)
 
     elif case == "single_spike_filtered":
-      pred_lat_accels = _build_single_spike_filtered(n, base=1.0)
+      # Base must stay below the entering threshold so p97 lands under it; 0.6 x th
+      # keeps this case meaningful after the 2026-11-14 retune (th 1.3 -> 0.9).
+      pred_lat_accels = _build_single_spike_filtered(n, base=0.6 * th)
 
     elif case == "persistent_high_values":
       # Make enough "high" samples so p97 is driven by the persistent trend, not a single outlier.
@@ -206,4 +208,134 @@ class TestSmartCruiseControlVision(OpenpilotTestCase):
       assert self.scc_v.max_pred_lat_acc < th
       assert self.scc_v.state == VisionState.enabled
 
-  # TODO-SP: mock modelV2 data to test other states
+  def test_entering_at_forty_kph_asks_for_a_real_reduction(self):
+    """2026-11-14 retune: 1.5 m/s^2 predicted at 40 km/h must now demand braking.
+
+    Before the retune this entered the curve state but still asked for MORE speed than
+    the car had (vTarget 11.6 m/s against vEgo 11.1), which is exactly what "the car
+    does not slow for curves" looked like on the 2026-11-13 route: 475 entering frames
+    averaging 0.01 m/s below the car's own speed.
+    """
+    n = len(ModelConstants.T_IDXS)
+    mdl = generate_modelV2()
+    v_ego = 11.1  # 40 km/h
+    mdl.modelV2.velocity.x = [v_ego for _ in range(n)]
+    # predicted_lat_accels = |orientationRate.z| * velocity.x
+    mdl.modelV2.orientationRate.z = [1.5 / v_ego for _ in range(n)]
+    self.sm["modelV2"] = mdl.modelV2
+
+    # 1st update leaves disabled, 2nd evaluates the entering condition
+    self.scc_v.update(self.sm, True, False, v_ego, 0.0, 0.0)
+    self.scc_v.update(self.sm, True, False, v_ego, 0.0, 0.0)
+
+    assert self.scc_v.state == VisionState.entering
+    assert self.scc_v.output_v_target < v_ego - 0.5
+
+  def step_curve(self, predicted, current=0.5, *, long_enabled=True, override=False, speed=10.0, cruise=12.0):
+    n = len(ModelConstants.T_IDXS)
+    self.sm['modelV2'].velocity.x = [speed] * n
+    self.sm['modelV2'].orientationRate.z = [predicted / max(speed, 0.1)] * n
+    self.sm['controlsState'].curvature = current / max(speed ** 2, 0.01)
+    self.scc_v.update(self.sm, long_enabled, override, speed, 0.0, cruise)
+
+  def enter_curve(self):
+    self.step_curve(1.5)
+    self.step_curve(1.5)
+    assert self.scc_v.state == VisionState.entering
+
+  def test_entering_prediction_dip_preserves_constraint_and_recovers(self):
+    self.enter_curve()
+    target = self.scc_v.output_v_target
+    acceleration = self.scc_v.output_a_target
+    self.step_curve(0.4)
+    assert self.scc_v.state == VisionState.entering
+    assert self.scc_v.output_v_target <= target
+    assert self.scc_v.output_a_target <= acceleration
+    self.step_curve(1.5)
+    assert self.scc_v.state == VisionState.entering
+    assert self.scc_v.output_v_target <= target + 0.5 * DT_MDL
+
+  def test_same_prediction_dip_releases_only_when_persistent(self):
+    self.enter_curve()
+    previous = self.scc_v.output_v_target
+    previous_a = self.scc_v.output_a_target
+    saw_leaving = False
+    for frame in range(int(20.0 / DT_MDL)):
+      self.step_curve(0.4)
+      if self.scc_v.state == VisionState.enabled:
+        assert frame >= int(0.3 / DT_MDL)
+        assert previous >= 12.0 - 0.5 * DT_MDL
+        assert self.scc_v.output_v_target == V_CRUISE_UNSET
+        break
+      saw_leaving |= self.scc_v.state == VisionState.leaving
+      assert self.scc_v.output_v_target <= previous + 0.5 * DT_MDL + 1e-8
+      assert self.scc_v.output_a_target <= previous_a + 0.5 * DT_MDL + 1e-8
+      previous = self.scc_v.output_v_target
+      previous_a = self.scc_v.output_a_target
+    else:
+      raise AssertionError('Persistent straight driving must release the curve constraint')
+    assert saw_leaving
+
+  def test_current_turn_blocks_exit_even_if_prediction_drops(self):
+    self.enter_curve()
+    target = self.scc_v.output_v_target
+    for _ in range(int(2.0 / DT_MDL)):
+      self.step_curve(0.4, current=1.0)
+      assert self.scc_v.output_v_target <= target
+    assert self.scc_v.is_active
+    assert self.scc_v.state != VisionState.enabled
+
+  def test_leaving_waits_when_prediction_is_between_enter_and_abort_thresholds(self):
+    self.enter_curve()
+    self.step_curve(1.5, current=1.5)
+    target = self.scc_v.output_v_target
+    for _ in range(int(2.0 / DT_MDL)):
+      self.step_curve(0.8, current=0.4)
+      assert self.scc_v.is_active
+      assert self.scc_v.output_v_target <= target
+
+  def test_leaving_dip_requires_clear_prediction_and_confirmation(self):
+    self.enter_curve()
+    self.step_curve(1.5, current=1.5)
+    assert self.scc_v.state == VisionState.turning
+    target = self.scc_v.output_v_target
+    self.step_curve(0.4, current=0.4)
+    self.step_curve(0.4, current=0.4)
+    assert self.scc_v.is_active
+    assert self.scc_v.output_v_target <= target
+    self.step_curve(1.5, current=1.5)
+    assert self.scc_v.state == VisionState.turning
+
+  def test_clear_confirmation_restarts_after_prediction_recovers(self):
+    self.enter_curve()
+    for _ in range(3):
+      self.step_curve(0.4)
+    self.step_curve(1.5)
+    for _ in range(3):
+      self.step_curve(0.4)
+    assert self.scc_v.state == VisionState.entering
+
+  def test_override_and_disable_clear_pending_curve_release(self):
+    for override in (True, False):
+      self.scc_v = SmartCruiseControlVision()
+      self.enter_curve()
+      for _ in range(3):
+        self.step_curve(0.4)
+      self.step_curve(0.4, long_enabled=override, override=override)
+      assert not self.scc_v.is_active
+      assert self.scc_v.output_v_target == V_CRUISE_UNSET
+      self.step_curve(0.4)
+      self.step_curve(0.4)
+      assert self.scc_v.state == VisionState.enabled
+
+  def test_zero_prediction_releases_without_nonfinite_active_target(self):
+    self.enter_curve()
+    for _ in range(int(20.0 / DT_MDL)):
+      self.step_curve(0.0, current=0.0)
+      assert np.isfinite(self.scc_v.output_v_target)
+    assert self.scc_v.state == VisionState.enabled
+
+  def test_low_speed_keeps_existing_floor_during_active_curve(self):
+    self.enter_curve()
+    self.step_curve(3.0, speed=2.0)
+    assert self.scc_v.output_v_target == MIN_V

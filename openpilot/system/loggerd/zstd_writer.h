@@ -2,6 +2,7 @@
 
 #include <zstd.h>
 
+#include <chrono>
 #include <string>
 #include <vector>
 #include <capnp/common.h>
@@ -21,4 +22,5 @@ private:
   std::vector<char> output_buffer_;
   ZSTD_CStream *cstream_;
   FILE* file_ = nullptr;
+  std::chrono::steady_clock::time_point last_checkpoint_ = std::chrono::steady_clock::now();
 };

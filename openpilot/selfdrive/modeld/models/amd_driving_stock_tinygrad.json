@@ -1,0 +1,9 @@
+{
+  "model_checkpoint": "6a7d09ad-bcc9-43bc-916d-29287e60cee2/200/a27b3122-733e-4a65-938b-acfebebbe5e8/100",
+  "train_run": "6a7d09ad-bcc9-43bc-916d-29287e60cee2",
+  "train_step": "200",
+  "export_ref": "a27b3122-733e-4a65-938b-acfebebbe5e8",
+  "hidden_state": "100",
+  "artifact": "amd_driving_stock_tinygrad.pkl",
+  "artifact_bytes": 92300336
+}

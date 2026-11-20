@@ -113,42 +113,136 @@ def make_frame_prepare(nv12: NV12Frame, model_w, model_h):
   return frame_prepare_tinygrad
 
 
+# The "big" driving models take the recurrent state as explicit inputs/outputs
+# (state_img_q / state_desire_q / state_feat_q -> next_state_*), instead of keeping the
+# history in JIT-internal buffers the way the small supercombo models do.
+BIG_MODEL_STATE_KEYS = ('state_img_q', 'state_desire_q', 'state_feat_q')
+
+NAV_MODEL_STATE_KEYS = ('state_map_features_q', 'state_navigation_features_q')
+NAV_MODEL_QUEUES = ('state_map_q', 'state_nav_q')
+
+TINYGRAD_DTYPE_NUMPY = {
+  'dtypes.uchar': np.uint8, 'dtypes.char': np.int8,
+  'dtypes.ushort': np.uint16, 'dtypes.short': np.int16,
+  'dtypes.uint': np.uint32, 'dtypes.int': np.int32, 'dtypes.long': np.int64,
+  'dtypes.half': np.float16, 'dtypes.float': np.float32, 'dtypes.double': np.float64,
+  'dtypes.bool': np.bool_,
+}
+
+
+def numpy_dtype(spec_name, fallback):
+  if not spec_name:
+    return np.dtype(fallback)
+  return np.dtype(TINYGRAD_DTYPE_NUMPY.get(spec_name, fallback))
+
+
+def is_big_model(input_shapes) -> bool:
+  return all(k in input_shapes for k in BIG_MODEL_STATE_KEYS)
+
+
+def is_nav_model(input_shapes) -> bool:
+  """True for the map/navigation models (nav-model-integration).
+
+  Detection is structural on purpose: these models are otherwise big models, so a
+  name-based switch would let a nav artifact compile into an artifact that silently
+  never receives its two inputs."""
+  return all(k in input_shapes for k in NAV_MODEL_STATE_KEYS)
+
+
+def artifact_inputs(artifact) -> list[str]:
+  """The JIT argument list recorded in a compiled artifact.
+
+  It lives at the artifact's top level, not inside `metadata`: the first nav bring-up read
+  `metadata['modeld_inputs']`, silently fell back to the five-argument list and failed at
+  the first frame with a TinyJit args mismatch. Accept both places so older artifacts and
+  hand-built ones keep working."""
+  metadata = artifact.get('metadata', {}) or {}
+  return list(artifact.get('modeld_inputs') or metadata.get('modeld_inputs') or MODELD_INPUTS)
+
+
+def modeld_inputs(input_shapes):
+  """
+  The nav states are device-resident queues like the other big-model states, so they
+  join the JIT argument list. Everything else keeps the historical five arguments, and
+  the list is written into the artifact so a runtime never has to guess."""
+  return MODELD_INPUTS + (list(NAV_MODEL_QUEUES) if is_nav_model(input_shapes) else [])
+
+
 def get_policy_npy_shapes(input_shapes):
-  dp = input_shapes['desire_pulse']  # (1, 25, 8)
   tc = input_shapes['traffic_convention']  # (1, 2)
   at = input_shapes['action_t']  # (1, 2)
-  fb = input_shapes['features_buffer']  # (1, T-1, ...) e.g. (1, 24, 32, 512) with spatial features
-  feat_dim = math.prod(fb[2:])
-  # TODO prev_feat shouldn't exist and be handled inside the JIT, but corrupt on QCOM for now
-  shapes = {'desire': (dp[2],), 'traffic_convention': tuple(tc), 'action_t': tuple(at), 'prev_feat': (fb[0], feat_dim)}
+  if is_big_model(input_shapes):
+    d = input_shapes['desire']  # (8,)
+    sq = input_shapes['state_feat_q']  # (T, 1, feat_dim)
+    feat_dim = math.prod(sq[2:])
+    # prev_feat is still written by modeld after every run; the big model keeps its own
+    # rolling history so the value is only kept for interface compatibility.
+    shapes = {'desire': tuple(d), 'traffic_convention': tuple(tc), 'action_t': tuple(at), 'prev_feat': (1, feat_dim)}
+  else:
+    dp = input_shapes['desire_pulse']  # (1, 25, 8)
+    fb = input_shapes['features_buffer']  # (1, T-1, ...) e.g. (1, 24, 32, 512) with spatial features
+    feat_dim = math.prod(fb[2:])
+    # TODO prev_feat shouldn't exist and be handled inside the JIT, but corrupt on QCOM for now
+    shapes = {'desire': (dp[2],), 'traffic_convention': tuple(tc), 'action_t': tuple(at), 'prev_feat': (fb[0], feat_dim)}
+  if is_nav_model(input_shapes):
+    shapes['nav'] = tuple(input_shapes['navigation'])
   return shapes, [math.prod(s) for s in shapes.values()]
 
 
-def make_input_queues(input_shapes, frame_skip, device, frame_copy_size):
+def packed_layout(input_shapes, frame_copy_size):
+  _, policy_sizes = get_policy_npy_shapes(input_shapes)
+  npy_bytes = (18 + sum(policy_sizes)) * np.dtype(np.float32).itemsize
+  nav_map_bytes = int(math.prod(input_shapes['nav_map'])) if is_nav_model(input_shapes) else 0
+  return npy_bytes, frame_copy_size, nav_map_bytes
+
+
+def _queue_shapes(input_shapes, frame_skip):
+  if is_big_model(input_shapes):
+    return (tuple(input_shapes['state_img_q']), np.uint8,
+            (1,), np.uint8,
+            tuple(input_shapes['state_feat_q']), np.float32,
+            tuple(input_shapes['state_desire_q']), np.float32)
   img = input_shapes['img']  # (1, 12, 128, 256)
   fb = input_shapes['features_buffer']  # (1, T-1, ...), past features only; the model appends the current frame's feature
-  feat_dim = math.prod(fb[2:])
   dp = input_shapes['desire_pulse']  # (1, 25, 8)
+  feat_dim = math.prod(fb[2:])
   n_frames = img[1] // 6
   img_buf_shape = (frame_skip * (n_frames - 1) + 1, 6, img[2], img[3])
+  return (img_buf_shape, np.uint8,
+          img_buf_shape, np.uint8,
+          (frame_skip * fb[1], fb[0], feat_dim), np.float32,
+          (frame_skip * dp[1], dp[0], dp[2]), np.float32)
+
+
+def make_input_queues(input_shapes, frame_skip, device, frame_copy_size, input_dtypes=None):
+  img_shape, img_dt, big_shape, big_dt, feat_shape, feat_dt, des_shape, des_dt = _queue_shapes(input_shapes, frame_skip)
 
   policy_shapes, _ = get_policy_npy_shapes(input_shapes)
   shapes = {'tfm': (3, 3), 'big_tfm': (3, 3)} | policy_shapes
   sizes = [math.prod(s) for s in shapes.values()]
-  packed_npy_size = sum(sizes) * np.dtype(np.float32).itemsize
-  packed_input = np.zeros(packed_npy_size + 2 * frame_copy_size, dtype=np.uint8)
-  packed_npy_inputs = packed_input[:packed_npy_size].view(np.float32)
-  frames = packed_input[packed_npy_size:]
+  npy_bytes, _, nav_map_bytes = packed_layout(input_shapes, frame_copy_size)
+  packed_input = np.zeros(npy_bytes + 2 * frame_copy_size + nav_map_bytes, dtype=np.uint8)
+  packed_npy_inputs = packed_input[:npy_bytes].view(np.float32)
+  frames = packed_input[npy_bytes:npy_bytes + 2 * frame_copy_size]
   frame_views = {'img': frames[:frame_copy_size], 'big_img': frames[frame_copy_size:]}
   # views into the packed inputs, to be refilled at runtime
   npy = {k: v.reshape(s) for (k, s), v in zip(shapes.items(), np.split(packed_npy_inputs, np.cumsum(sizes[:-1])), strict=True)}
+  if nav_map_bytes:
+    npy['nav_map'] = packed_input[npy_bytes + 2 * frame_copy_size:].reshape(tuple(input_shapes['nav_map']))
   input_queues = {
-    'img_q': Tensor(np.zeros(img_buf_shape, dtype=np.uint8), device=device).contiguous().realize(),
-    'big_img_q': Tensor(np.zeros(img_buf_shape, dtype=np.uint8), device=device).contiguous().realize(),
-    'feat_q': Tensor(np.zeros((frame_skip * fb[1], fb[0], feat_dim), dtype=np.float32), device=device).contiguous().realize(),
-    'desire_q': Tensor(np.zeros((frame_skip * dp[1], dp[0], dp[2]), dtype=np.float32), device=device).contiguous().realize(),
+    'img_q': Tensor(np.zeros(img_shape, dtype=img_dt), device=device).contiguous().realize(),
+    'big_img_q': Tensor(np.zeros(big_shape, dtype=big_dt), device=device).contiguous().realize(),
+    'feat_q': Tensor(np.zeros(feat_shape, dtype=feat_dt), device=device).contiguous().realize(),
+    'desire_q': Tensor(np.zeros(des_shape, dtype=des_dt), device=device).contiguous().realize(),
     'packed_npy_inputs': Tensor(packed_input, device='NPY').realize(),
   }
+  if is_nav_model(input_shapes):
+    map_dt = numpy_dtype((input_dtypes or {}).get('state_map_features_q'), 'uint8')
+    nav_dt = numpy_dtype((input_dtypes or {}).get('state_navigation_features_q'), 'float32')
+    input_queues['state_map_q'] = Tensor(np.zeros(tuple(input_shapes['state_map_features_q']), dtype=map_dt),
+                                         device=device).contiguous().realize()
+    input_queues['state_nav_q'] = Tensor(np.zeros(tuple(input_shapes['state_navigation_features_q']), dtype=nav_dt),
+                                         device=device).contiguous().realize()
   return input_queues, npy, frame_views
 
 
@@ -182,13 +276,60 @@ def make_warp(nv12, model_w, model_h):
   return warp
 
 
+BIG_MODEL_STATE_OUTPUTS = ('img_q', 'feat_q', 'desire_q')
+NAV_MODEL_STATE_OUTPUTS = ('state_map_q', 'state_nav_q')
+
+
+def apply_state_update(input_queues, outs, nav=False):
+  names = BIG_MODEL_STATE_OUTPUTS + (NAV_MODEL_STATE_OUTPUTS if nav else ())
+  for name, value in zip(names, outs[1:], strict=False):
+    queue = input_queues[name]
+    input_queues[name].assign(value.cast(queue.dtype))
+
+
 def make_run_policy(model_runner, model_metadata, frame_skip):
   sample_desire_fn = partial(sample_desire, frame_skip=frame_skip)
   sample_skip_fn = partial(sample_skip, frame_skip=frame_skip)
   npy_shapes, npy_sizes = get_policy_npy_shapes(model_metadata['input_shapes'])
   model_input_dtypes = {name: spec.dtype for name, spec in model_runner.graph_inputs.items()}
+  nav_model = is_nav_model(model_metadata['input_shapes'])
 
-  def run_policy(warped, img_q, big_img_q, feat_q, desire_q, packed_npy_inputs):
+  if is_big_model(model_metadata['input_shapes']):
+    def run_policy_big(warped, img_q, big_img_q, feat_q, desire_q, packed_npy_inputs,
+                       nav_map=None, state_map_q=None, state_nav_q=None):
+      packed_npy_inputs = packed_npy_inputs.to(Device.DEFAULT)
+      Tensor.realize(packed_npy_inputs, warped)
+
+      npy_vals = [t.reshape(s) for t, s in zip(packed_npy_inputs.split(npy_sizes), npy_shapes.values(), strict=True)]
+      desire, traffic_convention, action_t, _prev_feat = npy_vals[:4]
+      inputs = {
+        'new_img': warped,
+        'desire': desire,
+        'traffic_convention': traffic_convention,
+        'action_t': action_t,
+        'state_img_q': img_q,
+        'state_desire_q': desire_q,
+        'state_feat_q': feat_q,
+      }
+      if nav_model:
+        inputs['nav_map'] = nav_map.reshape(tuple(model_metadata['input_shapes']['nav_map']))
+        inputs['navigation'] = npy_vals[4]
+        inputs['state_map_features_q'] = state_map_q
+        inputs['state_navigation_features_q'] = state_nav_q
+      inputs = {name: value.cast(model_input_dtypes[name]) for name, value in inputs.items()}
+      out = model_runner(inputs)
+      outs = [out['outputs'].cast('float32'),
+              out['next_state_img_q'].realize(),
+              out['next_state_feat_q'].realize(),
+              out['next_state_desire_q'].realize()]
+      if nav_model:
+        outs += [out['next_state_map_features_q'].realize(),
+                 out['next_state_navigation_features_q'].realize()]
+      return tuple(outs)
+    return run_policy_big
+
+  def run_policy(warped, img_q, big_img_q, feat_q, desire_q, packed_npy_inputs,
+                 nav_map=None, state_map_q=None, state_nav_q=None):
     packed_npy_inputs = packed_npy_inputs.to(Device.DEFAULT)
     Tensor.realize(packed_npy_inputs, warped)
 
@@ -214,18 +355,20 @@ def make_run_policy(model_runner, model_metadata, frame_skip):
 
 
 def make_run_model(warp, run_policy, model_metadata, frame_copy_size):
+  npy_bytes, _, nav_map_bytes = packed_layout(model_metadata['input_shapes'], frame_copy_size)
   _, policy_sizes = get_policy_npy_shapes(model_metadata['input_shapes'])
-  packed_npy_size = (18 + sum(policy_sizes)) * np.dtype(np.float32).itemsize
 
-  def run_model(img_q, big_img_q, feat_q, desire_q, packed_npy_inputs):
+  def run_model(img_q, big_img_q, feat_q, desire_q, packed_npy_inputs, state_map_q=None, state_nav_q=None):
     packed_input = packed_npy_inputs.to(Device.DEFAULT)
     Tensor.realize(packed_input)
-    packed_npy_inputs = packed_input[:packed_npy_size].bitcast('float32')
-    frame = packed_input[packed_npy_size:packed_npy_size + frame_copy_size]
-    big_frame = packed_input[packed_npy_size + frame_copy_size:]
-    tfm, big_tfm, policy_inputs = packed_npy_inputs.split([9, 9, sum(policy_sizes)])
+    packed_npy = packed_input[:npy_bytes].bitcast('float32')
+    frame = packed_input[npy_bytes:npy_bytes + frame_copy_size]
+    big_frame = packed_input[npy_bytes + frame_copy_size:npy_bytes + 2 * frame_copy_size]
+    nav_map = packed_input[npy_bytes + 2 * frame_copy_size:] if nav_map_bytes else None
+    tfm, big_tfm, policy_inputs = packed_npy.split([9, 9, sum(policy_sizes)])
     warped = warp(tfm.reshape(3, 3), big_tfm.reshape(3, 3), frame, big_frame)
-    return run_policy(warped, img_q, big_img_q, feat_q, desire_q, policy_inputs)
+    return run_policy(warped, img_q, big_img_q, feat_q, desire_q, policy_inputs,
+                      nav_map, state_map_q, state_nav_q)
   return run_model
 
 
@@ -276,6 +419,30 @@ def compile_jit(jit, input_keys, make_queues, benchmark_runs):
   return jit
 
 
+def write_artifact_sidecar(output_path: str, metadata: dict) -> None:
+  """Record where this artifact came from, next to it.
+
+  The pkl already carries model_checkpoint, but reading it means loading ~800 MB,
+  which the UI cannot do on every render. A small JSON next to the artifact lets
+  the model selector show the real name instead of a filename."""
+  import json
+  checkpoint = metadata.get('model_checkpoint') or ''
+  parts = checkpoint.split('/')
+  info = {
+    'model_checkpoint': checkpoint,
+    'train_run': parts[0] if len(parts) > 0 else '',
+    'train_step': parts[1] if len(parts) > 1 else '',
+    'export_ref': parts[2] if len(parts) > 2 else '',
+    'hidden_state': parts[3] if len(parts) > 3 else '',
+    'artifact': os.path.basename(output_path),
+    'artifact_bytes': os.path.getsize(output_path),
+  }
+  sidecar = os.path.splitext(output_path)[0] + '.json'
+  with open(sidecar, 'w') as f:
+    json.dump(info, f, indent=2)
+  print(f"Wrote artifact metadata to {sidecar}")
+
+
 def _parse_size(s):
   w, h = s.lower().split('x')
   return int(w), int(h)
@@ -314,6 +481,8 @@ if __name__ == "__main__":
     'input_devices': {'model': Device.DEFAULT},
     'run_model': {},
   }
+  out['modeld_inputs'] = modeld_inputs(out['metadata']['input_shapes'])
+  out['metadata']['input_dtypes'] = {name: str(spec.dtype) for name, spec in model_runner.graph_inputs.items()}
 
   run_policy = make_run_policy(model_runner, out['metadata'], args.frame_skip)
 
@@ -321,12 +490,14 @@ if __name__ == "__main__":
     nv12 = NV12Frame(cam_w, cam_h, *get_nv12_info(cam_w, cam_h))
     frame_copy_size = nv12_copy_size(nv12.stride, nv12.y_height, nv12.uv_height)
     make_model_queues = partial(make_input_queues, out['metadata']['input_shapes'], args.frame_skip,
-                                frame_copy_size=frame_copy_size)
+                                frame_copy_size=frame_copy_size,
+                                input_dtypes=out['metadata']['input_dtypes'])
     warp = make_warp(nv12, model_w, model_h)
     run_model_jit = TinyJit(make_run_model(warp, run_policy, out['metadata'], frame_copy_size), prune=True)
-    out['run_model'][(cam_w,cam_h)] = compile_jit(run_model_jit, MODELD_INPUTS, make_model_queues,
+    out['run_model'][(cam_w,cam_h)] = compile_jit(run_model_jit, out['modeld_inputs'], make_model_queues,
                                                   args.benchmark_runs)
 
   with open(args.output, "wb") as f:
     dump_oob(out, f)
   print(f"Saved JITs to {args.output} ({os.path.getsize(args.output) / 1e6:.2f} MB)")
+  write_artifact_sidecar(args.output, out['metadata'])

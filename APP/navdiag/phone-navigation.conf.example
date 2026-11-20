@@ -1,0 +1,8 @@
+# 固定已验证版本的高德 Root 完整路线；设为 0 可关闭地图通道。
+export SUNNYPILOT_AMAP_ROOT_NAV="${SUNNYPILOT_AMAP_ROOT_NAV:-1}"
+export NAVDIAG_ADB="${NAVDIAG_ADB:-/data/sunnypilot/APP/navdiag/runtime/platform-tools/adb}"
+# 同时连接手机和车机时必须指定手机序列号；空值仅允许唯一设备自动选择。
+export NAVDIAG_SERIAL="${NAVDIAG_SERIAL:-}"
+# 默认由导航进程管理 5039 独占服务，退出时清理；已有服务需显式设为 attach，不启动也不关闭。
+export NAVDIAG_ADB_PORT="${NAVDIAG_ADB_PORT:-5039}"
+export NAVDIAG_ADB_OWNERSHIP="${NAVDIAG_ADB_OWNERSHIP:-dedicated}"

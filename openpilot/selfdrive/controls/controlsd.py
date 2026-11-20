@@ -18,7 +18,7 @@ from openpilot.selfdrive.controls.lib.latcontrol_pid import LatControlPID
 from openpilot.selfdrive.controls.lib.latcontrol_angle import LatControlAngle, STEER_ANGLE_SATURATION_THRESHOLD
 from openpilot.selfdrive.controls.lib.latcontrol_curvature import LatControlCurvature
 from openpilot.selfdrive.controls.lib.latcontrol_torque import LatControlTorque
-from openpilot.selfdrive.controls.lib.longcontrol import LongControl
+from openpilot.selfdrive.controls.lib.longcontrol import LongControl, get_resume_request
 from openpilot.selfdrive.modeld.modeld import LAT_SMOOTH_SECONDS
 from openpilot.selfdrive.locationd.helpers import PoseCalibrator, Pose
 
@@ -81,7 +81,7 @@ class Controls(ControlsExt):
   def state_control(self):
     CS = self.sm['carState']
 
-    # Update VehicleModel
+    # Keep the physical model independent of actuator compensation: it is also used to estimate current curvature.
     lp = self.sm['vehicleParameters']
     x = max(lp.stiffnessFactor, 0.1)
     sr = max(lp.steerRatio, 0.1)
@@ -179,7 +179,7 @@ class Controls(ControlsExt):
 
     CC.cruiseControl.override = CC.enabled and not CC.longActive and (self.CP.openpilotLongitudinalControl or not self.CP_SP.pcmCruiseSpeed)
     CC.cruiseControl.cancel = CS.cruiseState.enabled and (not CC.enabled or not self.CP.pcmCruise)
-    CC.cruiseControl.resume = CC.enabled and CS.cruiseState.standstill and not self.sm['longitudinalPlan'].shouldStop
+    CC.cruiseControl.resume = get_resume_request(self.CP, CS, CC.enabled, self.sm['longitudinalPlan'].shouldStop)
 
     hudControl = CC.hudControl
     hudControl.setSpeed = float(CS.vCruiseCluster * CV.KPH_TO_MS)

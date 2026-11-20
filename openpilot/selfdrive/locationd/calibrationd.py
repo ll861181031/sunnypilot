@@ -51,6 +51,26 @@ def is_calibration_valid(rpy: np.ndarray) -> bool:
   return (PITCH_LIMITS[0] < rpy[1] < PITCH_LIMITS[1]) and (YAW_LIMITS[0] < rpy[2] < YAW_LIMITS[1])
 
 
+# Keep a little room inside the limits so the estimate does not sit on the edge
+# of what calibrationd accepts.
+MOUNT_TARGET_MARGIN = np.radians(0.3)
+
+
+def mount_adjustment(rpy, margin: float = MOUNT_TARGET_MARGIN) -> tuple[float, float]:
+  """How far the mount still has to move for calibrationd to accept it.
+
+  Returns (yaw, pitch) in radians, measured in the direction the camera has to
+  be turned. An axis that is already inside the accepted window gives zero, so
+  guidance only appears when the camera really has to be re-aimed instead of
+  asking for a perfectly level mount.
+  """
+  if len(rpy) != 3:
+    return 0.0, 0.0
+  yaw_target = float(np.clip(rpy[2], YAW_LIMITS[0] + margin, YAW_LIMITS[1] - margin))
+  pitch_target = float(np.clip(rpy[1], PITCH_LIMITS[0] + margin, PITCH_LIMITS[1] - margin))
+  return float(rpy[2] - yaw_target), float(rpy[1] - pitch_target)
+
+
 def sanity_clip(rpy: np.ndarray) -> np.ndarray:
   if np.isnan(rpy).any():
     rpy = RPY_INIT

@@ -9,7 +9,6 @@ from openpilot.selfdrive.ui.layouts.settings.settings import SettingsLayout, Pan
 from openpilot.selfdrive.ui.onroad.augmented_road_view import AugmentedRoadView
 from openpilot.selfdrive.ui.ui_state import device, ui_state
 from openpilot.selfdrive.ui.layouts.onboarding import OnboardingWindow
-from openpilot.selfdrive.ui.body.layouts.onroad import BodyLayout
 
 if gui_app.sunnypilot_ui():
   from openpilot.selfdrive.ui.sunnypilot.layouts.settings.settings import SettingsLayoutSP as SettingsLayout
@@ -34,7 +33,6 @@ class MainLayout(Widget):
 
     # Initialize layouts
     self._home_layout = HomeLayout()
-    self._home_body_layout = BodyLayout()
     self._layouts: dict[MainState, Widget] = {
       MainState.HOME: self._home_layout,
       MainState.SETTINGS: SettingsLayout(),
@@ -66,11 +64,9 @@ class MainLayout(Widget):
     self._layouts[MainState.HOME].set_settings_callback(lambda: self.open_settings(PanelType.TOGGLES))
     self._layouts[MainState.SETTINGS].set_callbacks(on_close=self._set_mode_for_state)
 
-    for layout in (self._layouts[MainState.ONROAD], self._home_body_layout):
-      layout.set_click_callback(self._on_onroad_clicked)
+    self._layouts[MainState.ONROAD].set_click_callback(self._on_onroad_clicked)
 
     device.add_interactive_timeout_callback(self._set_mode_for_state)
-    ui_state.add_on_body_changed_callbacks(self._on_body_changed)
 
   def _update_layout_rects(self):
     self._sidebar_rect = rl.Rectangle(self._rect.x, self._rect.y, SIDEBAR_WIDTH, self._rect.height)
@@ -85,12 +81,6 @@ class MainLayout(Widget):
       self._set_mode_for_state()
 
   def _set_mode_for_state(self):
-    # Don't go onroad if body, home is onroad
-    if ui_state.is_body:
-      self._set_current_layout(MainState.HOME)
-      self._sidebar.set_visible(not ui_state.ignition)
-      return
-
     if ui_state.started:
       # Don't hide sidebar from interactive timeout
       if self._current_mode != MainState.ONROAD:
@@ -121,10 +111,6 @@ class MainLayout(Widget):
 
   def _on_onroad_clicked(self):
     self._sidebar.set_visible(not self._sidebar.is_visible)
-
-  def _on_body_changed(self):
-    self._layouts[MainState.HOME] = self._home_body_layout if ui_state.is_body else self._home_layout
-    self._set_mode_for_state()
 
   def _render_main_content(self):
     # Render sidebar

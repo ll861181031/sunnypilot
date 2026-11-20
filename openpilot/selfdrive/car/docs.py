@@ -5,7 +5,7 @@ from string import Template
 
 from openpilot.common.basedir import BASEDIR
 from opendbc.car.docs import get_all_car_docs, get_all_footnotes
-from opendbc.car.docs_definitions import Column, SupportType
+from opendbc.car.docs_definitions import Column
 
 CARS_MD_OUT = os.path.join(BASEDIR, "docs", "CARS.md")
 CARS_MD_TEMPLATE = os.path.join(BASEDIR, "openpilot/selfdrive", "car", "CARS_template.md")
@@ -42,8 +42,7 @@ def _build_cars_table(upstream_cars) -> tuple[str, str, str]:
 def generate_cars_md(all_car_docs, template_fn: str, **kwargs) -> str:
   del kwargs  # kept for call-site compatibility
 
-  upstream_cars = [c for c in all_car_docs if c.support_type == SupportType.UPSTREAM]
-  table_header, table_separator, table_rows = _build_cars_table(upstream_cars)
+  table_header, table_separator, table_rows = _build_cars_table(all_car_docs)
 
   footnotes = [fn.value.text.replace('</br>', '') for fn in get_all_footnotes()]
   footnotes_md = "\n".join(
@@ -55,7 +54,7 @@ def generate_cars_md(all_car_docs, template_fn: str, **kwargs) -> str:
     template = Template(f.read())
 
   return template.substitute(
-    supported_count=len(upstream_cars),
+    supported_count=len(all_car_docs),
     table_header=table_header,
     table_separator=table_separator,
     table_rows=table_rows,

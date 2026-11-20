@@ -1,4 +1,5 @@
 from openpilot.common.params import Params
+from openpilot.common.hardware import PC
 from openpilot.selfdrive.ui.widgets.ssh_key import ssh_key_item
 from openpilot.selfdrive.ui.ui_state import ui_state
 from openpilot.system.ui.widgets import Widget
@@ -18,6 +19,10 @@ DESCRIPTIONS = {
     "ADB (Android Debug Bridge) allows connecting to your device over USB or over the network. " +
     "See https://docs.comma.ai/how-to/connect-to-comma for more info."
   ),
+  'adb_ssh_pc': tr_noop(
+    "On this desktop ADB and SSH are managed by the operating system, not by sunnypilot. " +
+    "This toggle only stores a value here and has no effect."
+  ),
   'ssh_key': tr_noop(
     "Warning: This grants SSH access to all public keys in your GitHub settings. Never enter a GitHub username " +
     "other than your own. A comma employee will NEVER ask you to add their GitHub username."
@@ -32,27 +37,37 @@ DESCRIPTIONS = {
 }
 
 
+def adb_ssh_controls_enabled() -> bool:
+  """ADB/SSH toggles have no consumer on the desktop: the OS owns those services.
+
+  Kept as a function so the page can disable them (and a test can prove it)
+  instead of offering a switch that silently does nothing.
+  """
+  return not PC
+
+
 class DeveloperLayout(Widget):
   def __init__(self):
     super().__init__()
     self._params = Params()
-    self._is_release = False  # self._params.get_bool("IsReleaseBranch")
+    self._is_release = self._params.get_bool("IsReleaseBranch") or self._params.get_bool("IsReleaseSpBranch")
 
     # Build items and keep references for callbacks/state updates
     self._adb_toggle = toggle_item(
       lambda: tr("Enable ADB"),
-      description=lambda: tr(DESCRIPTIONS["enable_adb"]),
+      description=lambda: tr(DESCRIPTIONS["adb_ssh_pc"] if PC else DESCRIPTIONS["enable_adb"]),
       initial_state=self._params.get_bool("AdbEnabled"),
       callback=self._on_enable_adb,
-      enabled=ui_state.is_offroad,
+      enabled=lambda: adb_ssh_controls_enabled() and ui_state.is_offroad(),
     )
 
     # SSH enable toggle + SSH key management
     self._ssh_toggle = toggle_item(
       lambda: tr("Enable SSH"),
-      description="",
+      description=lambda: tr(DESCRIPTIONS["adb_ssh_pc"]) if PC else "",
       initial_state=self._params.get_bool("SshEnabled"),
       callback=self._on_enable_ssh,
+      enabled=adb_ssh_controls_enabled,
     )
     self._ssh_keys = ssh_key_item(lambda: tr("SSH Keys"), description=lambda: tr(DESCRIPTIONS["ssh_key"]))
 
@@ -129,7 +144,6 @@ class DeveloperLayout(Widget):
       alpha_avail = ui_state.CP.alphaLongitudinalAvailable
       if not alpha_avail or self._is_release:
         self._alpha_long_toggle.set_visible(False)
-        self._params.remove("AlphaLongitudinalEnabled")
       else:
         self._alpha_long_toggle.set_visible(True)
 

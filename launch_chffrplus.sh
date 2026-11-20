@@ -1,6 +1,13 @@
 #!/usr/bin/env bash
 
-DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" >/dev/null && pwd )"
+DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" >/dev/null && pwd -P )"
+
+# Resolve the project directory when launched from a desktop entry or another
+# working directory.
+cd "$DIR" || exit 1
+# Bash tracks the directory internally; do not export shell-maintained PWD to
+# children that may change cwd themselves.
+unset PWD
 
 source "$DIR/launch_env.sh"
 
@@ -69,8 +76,8 @@ function launch {
   fi
 
   # handle pythonpath
-  ln -sfn $(pwd) /data/pythonpath
-  export PYTHONPATH="$PWD"
+  ln -sfn "$DIR" /data/pythonpath
+  export PYTHONPATH="$DIR"
 
   # submodule package symlinks for PYTHONPATH imports on device.
   # on PC these come from editable installs via pyproject.toml / uv.
@@ -85,15 +92,29 @@ function launch {
     agnos_init
   fi
 
-  # write tmux scrollback to a file
-  tmux capture-pane -pq -S-1000 > /tmp/launch_log
+  # Write tmux scrollback to a file when running on the comma device.
+  # Desktop development environments may not have tmux installed; the
+  # scrollback file is optional and should not block the project launch.
+  if command -v tmux >/dev/null 2>&1; then
+    tmux capture-pane -pq -S-1000 > /tmp/launch_log
+  else
+    : > /tmp/launch_log
+  fi
 
   # start manager
-  cd openpilot/system/manager
+  cd "$DIR/openpilot/system/manager" || exit 1
+  unset PWD
   if [ ! -f $DIR/prebuilt ]; then
     ./build.py
   fi
   ./manager.py
+  local manager_status=$?
+
+  # The desktop launcher retains the terminal. Return here so a stopped
+  # manager does not leave an idle launch shell holding the instance lock.
+  if [ ! -f /AGNOS ]; then
+    return "$manager_status"
+  fi
 
   # if broken, keep on screen error
   while true; do sleep 1; done

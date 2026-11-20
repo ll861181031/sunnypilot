@@ -38,7 +38,7 @@ class ToggleActionSP(ToggleAction):
   def __init__(self, initial_state: bool = False, width: int = style.TOGGLE_WIDTH, enabled: bool | Callable[[], bool] = True,
                callback: Callable[[bool], None] | None = None, param: str | None = None):
     ToggleAction.__init__(self, initial_state, width, enabled, callback)
-    self.toggle = ToggleSP(initial_state=initial_state, callback=callback, param=param)
+    self.toggle = self._child(ToggleSP(initial_state=initial_state, callback=callback, param=param))
 
 
 class ButtonSP(Button):
@@ -125,25 +125,48 @@ class DualButtonActionSP(DualButtonAction):
     self.right_button.render(right_rect)
 
 
+def fitted_button_width(configured_width: float, available_width: float, button_count: int) -> float:
+  """Buttons share the row instead of spilling past it.
+
+  The row used to be button_count * configured_width wide no matter how much space
+  it had. The chevron metrics setting has five options and the row had room for
+  four, so the fifth was never drawn - the setting looked like it had four choices
+  - and it still owned an invisible click region. Both halves of that bug start
+  with the width math, so it lives here where it can be tested without a window.
+  """
+  return min(configured_width, available_width / max(1, button_count))
+
+
 class MultipleButtonActionSP(MultipleButtonAction):
   def __init__(self, buttons: Sequence[str | Callable[[], str]], button_width: int, selected_index: int = 0, callback: Callable | None = None,
                param: str | None = None):
     MultipleButtonAction.__init__(self, buttons, button_width, selected_index, callback)
     self.param_key = param
     self.params = Params()
-    if self.param_key:
-      self.selected_button = int(self.params.get(self.param_key, return_default=True))
+    self._read_selection()
     self._anim_x: float | None = None
     self.enabled_buttons: set[int] | None = None
 
+  def _read_selection(self):
+    if self.param_key:
+      self.set_selected_button(int(self.params.get(self.param_key, return_default=True)))
+
+  def show_event(self):
+    super().show_event()
+    self._read_selection()
+
   def set_enabled_buttons(self, indices: set[int] | None):
     self.enabled_buttons = indices
+
+  def _button_width_for(self, available_width: float) -> float:
+    return fitted_button_width(self.button_width, available_width, len(self.buttons))
 
   def _render(self, rect: rl.Rectangle):
 
     button_y = rect.y + (rect.height - style.BUTTON_HEIGHT) / 2
 
-    total_width = len(self.buttons) * self.button_width
+    button_width = self._button_width_for(rect.width)
+    total_width = len(self.buttons) * button_width
     track_rect = rl.Rectangle(rect.x, button_y, total_width, style.BUTTON_HEIGHT)
 
     bg_color = style.MBC_TRANSPARENT
@@ -158,21 +181,21 @@ class MultipleButtonActionSP(MultipleButtonAction):
     rl.draw_rectangle_rounded_lines_ex(track_rect, 0.2, 20, 2, border_color)
 
     # highlight with animation
-    target_x = rect.x + self.selected_button * self.button_width
+    target_x = rect.x + self.selected_button * button_width
     if not self._anim_x:
       self._anim_x = target_x
     self._anim_x += (target_x - self._anim_x) * 0.2
 
-    highlight_rect = rl.Rectangle(self._anim_x, button_y, self.button_width, style.BUTTON_HEIGHT)
+    highlight_rect = rl.Rectangle(self._anim_x, button_y, button_width, style.BUTTON_HEIGHT)
     rl.draw_rectangle_rounded(highlight_rect, 0.2, 20, highlight_color)
 
     # text
     for i, _text in enumerate(self.buttons):
-      button_x = rect.x + i * self.button_width
+      button_x = rect.x + i * button_width
 
       text = _resolve_value(_text, "")
       text_size = measure_text_cached(self._font, text, 40)
-      text_x = button_x + (self.button_width - text_size.x) / 2
+      text_x = button_x + (button_width - text_size.x) / 2
       text_y = button_y + (style.BUTTON_HEIGHT - text_size.y) / 2
 
       # Check individual button enabled state
@@ -187,21 +210,22 @@ class MultipleButtonActionSP(MultipleButtonAction):
       return
 
     button_y = self._rect.y + (self._rect.height - style.BUTTON_HEIGHT) / 2
+    button_width = self._button_width_for(self._rect.width)
     for i, _ in enumerate(self.buttons):
-      button_x = self._rect.x + i * self.button_width
-      button_rect = rl.Rectangle(button_x, button_y, self.button_width, style.BUTTON_HEIGHT)
+      button_x = self._rect.x + i * button_width
+      button_rect = rl.Rectangle(button_x, button_y, button_width, style.BUTTON_HEIGHT)
 
       if rl.check_collision_point_rec(mouse_pos, button_rect):
         # Check if this specific button is enabled
         if self.enabled_buttons is not None and i not in self.enabled_buttons:
           return
 
+        if self.param_key:
+          self.params.put(self.param_key, i, block=True)
         self.selected_button = i
         if self.callback:
           self.callback(i)
-
-    if self.param_key:
-      self.params.put(self.param_key, self.selected_button)
+        return
 
 
 class ListItemSP(ListItem):
@@ -209,6 +233,8 @@ class ListItemSP(ListItem):
                description_visible: bool = False, callback: Callable | None = None,
                action_item: ItemAction | None = None, inline: bool = True, title_color: rl.Color = style.ITEM_TEXT_COLOR):
     ListItem.__init__(self, title, icon, description, description_visible, callback, action_item)
+    if action_item is not None:
+      self._child(action_item)
     self.title_color = title_color
     self.inline = inline
     if not self.inline:

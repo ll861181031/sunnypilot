@@ -48,11 +48,15 @@ class Plant:
     time.sleep(0.1)
     self.sm = messaging.SubMaster(['longitudinalPlan'])
 
-    from opendbc.car.honda.values import CAR
-    from opendbc.car.honda.interface import CarInterface
+    from opendbc.car import gen_empty_fingerprint
+    from opendbc.car.byd.interface import CarInterface
+    from opendbc.car.byd.values import CAR
 
-    CP = CarInterface.get_non_essential_params(CAR.HONDA_CIVIC)
-    CP_SP = CarInterface.get_non_essential_params_sp(CP, CAR.HONDA_CIVIC)
+    # 仿真直接执行规划器的加速度，车型参数也应选择 openpilot 纵向控制。
+    candidate = CAR.BYD_SONG_PLUS_DMI_23_ALT
+    fingerprint = gen_empty_fingerprint()
+    CP = CarInterface.get_params(candidate, fingerprint, [], alpha_long=True, is_release=False, docs=False)
+    CP_SP = CarInterface.get_params_sp(CP, candidate, fingerprint, [], alpha_long=True, is_release_sp=False, docs=False)
     self.planner = LongitudinalPlanner(CP, CP_SP, init_v=self.speed)
 
   @property

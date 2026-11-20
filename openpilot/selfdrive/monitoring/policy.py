@@ -442,6 +442,12 @@ class DriverMonitoring:
       brake_disengage_prob = sm['modelV2'].meta.disengagePredictions.brakeDisengageProbs[0] # brake disengage prob in next 2s
       steering_angle_deg = sm['carState'].steeringAngleDeg
       rpyCalib = sm['extrinsicsCalibration'].rpyCalib
+      # Same startup shape as modeld: calibrationd publishes an empty rpyCalib
+      # before it has solved anything, and face_orientation_from_model indexes
+      # [1]/[2] unguarded. DM is off on this device, but a latent IndexError here
+      # would kill the monitoring process the moment it is enabled.
+      if len(rpyCalib) != 3:
+        rpyCalib = [0., 0., 0.]
 
     self._set_pose_strictness(
       brake_disengage_prob=brake_disengage_prob,

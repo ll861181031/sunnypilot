@@ -1,0 +1,56 @@
+{
+  "app": {
+    "signingConfigs": [
+      {
+        "name": "default",
+        "type": "HarmonyOS",
+        "material": {
+          "certpath": "C:\\Users\\lsr\\.ohos\\config\\default_cplink_standalone_zFFR5m2PYsvpwjMRLwxStFldW7Y8inLtoWSHlfswstA=.cer",
+          "keyAlias": "debugKey",
+          "keyPassword": "0000001B21B7D223A2E1872B15621DFB31955870436BDAE181DF11FCDB08BD27DD4318A15426BBDCE563A9",
+          "profile": "C:\\Users\\lsr\\.ohos\\config\\default_cplink_standalone_zFFR5m2PYsvpwjMRLwxStFldW7Y8inLtoWSHlfswstA=.p7b",
+          "signAlg": "SHA256withECDSA",
+          "storeFile": "C:\\Users\\lsr\\.ohos\\config\\default_cplink_standalone_zFFR5m2PYsvpwjMRLwxStFldW7Y8inLtoWSHlfswstA=.p12",
+          "storePassword": "0000001B03E26A984179E1A2E78073274FCE333C847807874B3F7BADD8A9A5AA1AE2CD5EF9676C928E191D"
+        }
+      }
+    ],
+    "products": [
+      {
+        "name": "default",
+        "signingConfig": "default",
+        "compatibleSdkVersion": "26.0.0",
+        "targetSdkVersion": "26.0.0",
+        "runtimeOS": "HarmonyOS",
+        "buildOption": {
+          "strictMode": {
+            "caseSensitiveCheck": true,
+            "useNormalizedOHMUrl": true
+          }
+        }
+      }
+    ],
+    "buildModeSet": [
+      {
+        "name": "debug"
+      },
+      {
+        "name": "release"
+      }
+    ]
+  },
+  "modules": [
+    {
+      "name": "entry",
+      "srcPath": "./entry",
+      "targets": [
+        {
+          "name": "default",
+          "applyToProducts": [
+            "default"
+          ]
+        }
+      ]
+    }
+  ]
+}

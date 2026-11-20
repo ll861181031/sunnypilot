@@ -55,10 +55,11 @@ assert arch in [
   "Darwin",       # macOS arm64 (x86 not supported)
 ]
 
-pkg_names = ['acados', 'capnproto', 'eigen', 'ffmpeg', 'json11', 'ncurses', 'zeromq', 'zstd']
+pkg_names = ['acados', 'capnproto', 'eigen', 'ffmpeg', 'json11', 'libusb', 'ncurses', 'zeromq', 'zstd']
 pkgs = [importlib.import_module(name) for name in pkg_names]
 acados = pkgs[pkg_names.index('acados')]
 ffmpeg = pkgs[pkg_names.index('ffmpeg')]
+libusb = pkgs[pkg_names.index('libusb')]
 # Shared package ships .so/.dylib; older device venvs still have static .a only.
 # Keep static link deps (x264/z/va/drm) when the installed package is static so
 # COMMA_HARDWARE CI works without upgrading the device venv yet.
@@ -229,6 +230,15 @@ else:
   envCython["LINKFLAGS"] = ["-pthread", "-shared"]
 
 np_version = SCons.Script.Value(np.__version__)
+# Cythonise with the venv's cythonize, not whatever `cython` resolves to on PATH.
+# The system copy runs on the system interpreter, so it reads the system numpy's
+# __init__.cython-30.pxd and emits code that pokes PyArray_Descr.subarray - a field
+# numpy 2 moved into c_metadata. The compile step then uses the venv's numpy headers
+# and fails, which is how rednose's ekf_sym_pyx stopped building.
+_venv_bin = os.path.dirname(sys.executable)
+if os.path.exists(os.path.join(_venv_bin, "cythonize")):
+  envCython["CYTHON"] = os.path.join(_venv_bin, "cythonize")
+
 Export('envCython', 'np_version')
 
 Export('env', 'arch', 'acados', 'release', 'ffmpeg_libs')

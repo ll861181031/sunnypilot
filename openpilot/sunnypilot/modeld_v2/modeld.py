@@ -7,6 +7,7 @@ See the LICENSE.md file in the root directory for more details.
 """
 
 from collections.abc import Callable
+from functools import partial
 import os
 os.environ['GMMU'] = '0'
 import numpy as np
@@ -30,16 +31,18 @@ from openpilot.common.swaglog import cloudlog
 from openpilot.common.params import Params
 from openpilot.common.filter_simple import FirstOrderFilter
 from openpilot.common.realtime import config_realtime_process, DT_MDL
-from openpilot.common.transformations.camera import DEVICE_CAMERAS
+from openpilot.common.transformations.camera import device_camera_config
 from openpilot.common.transformations.model import get_warp_matrix
 from openpilot.system import sentry
 from openpilot.system.camerad.cameras.nv12_info import get_nv12_info
 from openpilot.selfdrive.controls.lib.desire_helper import DesireHelper
-from openpilot.selfdrive.controls.lib.drive_helpers import get_accel_from_plan, smooth_value
-from openpilot.selfdrive.modeld.modeld import ChestnutState
+from openpilot.selfdrive.controls.lib.drive_helpers import get_accel_from_plan, get_curvature_from_plan, smooth_value
+from openpilot.selfdrive.modeld.modeld import ChestnutState, extra_camera_geometry_matches_model, lateral_lookahead_time
+from openpilot.selfdrive.modeld.extra_frame_selection import ExtraFrameChanged, ExtraFrameSelector, copy_stable_frame
 
 from openpilot.selfdrive.modeld.compile_modeld import (
   MODELD_INPUTS,
+  is_nav_model,
   make_input_queues as make_stock_input_queues,
 )
 from openpilot.sunnypilot.modeld_v2.fill_model_msg import fill_model_msg, fill_pose_msg, PublishState, get_curvature_from_output
@@ -50,14 +53,21 @@ from openpilot.sunnypilot.modeld_v2.camera_offset_helper import CameraOffsetHelp
 from openpilot.sunnypilot.modeld_v2.compile_modeld import (derive_frame_skip, make_split_input_queues,
                                                            make_supercombo_input_queues, nv12_copy_size,
                                                            WARP_INPUTS, POLICY_INPUTS)
-from openpilot.sunnypilot.livedelay.helpers import get_lat_delay
+from openpilot.sunnypilot.livedelay.helpers import select_lat_delay, lateral_action_time, fill_lateral_delay_debug
 from openpilot.sunnypilot.modeld_v2.modeld_base import ModelStateBase
 from openpilot.sunnypilot.modeld_v2.helpers import load_oob
 from openpilot.sunnypilot.models.helpers import get_active_bundle
+from openpilot.sunnypilot.selfdrive.controls.lib.blendful import Blendful
 from openpilot.sunnypilot.selfdrive.controls.lib.relc import RoadEdgeLaneChangeController
 
 PROCESS_NAME = "openpilot.selfdrive.modeld.modeld_tinygrad"
 BIG_MODEL_TIMEOUT = 60
+# Consecutive frames without a usable wide frame before the second input is
+# abandoned. camerad tolerates 1.5 s of missed reads, so this sits beyond that.
+MAX_EXTRA_MISSES = 60
+# Two free-running UVC cameras cannot be phase-locked; half a frame at 20 fps is
+# the achievable bound, not the 10 ms this file used to log against.
+EXTRA_SYNC_TOLERANCE_NS = 25_000_000
 
 
 def _pkl_exists(path):
@@ -134,6 +144,9 @@ class ModelState(ModelStateBase):
     if self.is_run_model or 'model' in metadata:
       model_metadata = metadata.get('model', metadata)
       self.input_shapes = model_metadata['input_shapes']
+      self.modeld_inputs = model_metadata.get('modeld_inputs', MODELD_INPUTS)
+      if is_nav_model(self.input_shapes):
+        raise RuntimeError("nav (map/navigation) models need the stock modeld; modeld_v2 cannot feed nav_map/navigation")
       self.vision_output_slices = model_metadata['output_slices']
       self.policy_output_slices = {}
       self._policy_slices_list = []
@@ -142,7 +155,8 @@ class ModelState(ModelStateBase):
       self.frame_skip = derive_frame_skip({}, self.input_shapes)
       if self.is_run_model:
         self.input_queues, self.numpy_inputs, self.frame_buffers = make_stock_input_queues(
-          self.input_shapes, self.frame_skip, device=self.DEV, frame_copy_size=self.frame_copy_size)
+          self.input_shapes, self.frame_skip, device=self.DEV, frame_copy_size=self.frame_copy_size,
+          input_dtypes=model_metadata.get('input_dtypes'))
         self.frame_views, self.npy = self.frame_buffers, self.numpy_inputs
         self.run_model, self.run_policy, self.warp = jits['run_model'][(cam_w, cam_h)], None, None
       else:
@@ -216,11 +230,19 @@ class ModelState(ModelStateBase):
 
   def run(self, bufs: dict[str, VisionBuf], transforms: dict[str, np.ndarray],
           inputs: dict[str, np.ndarray],
-          after_enqueue: Callable[[], None] | None = None) -> dict[str, np.ndarray] | None:
+          after_enqueue: Callable[[], None] | None = None,
+          frame_ids: dict[str, int] | None = None) -> dict[str, np.ndarray] | None:
+    frame_ids = frame_ids or {}
     if self.is_run_model:
+      frame_copies = {}
       for key, buf in bufs.items():
-        data = buf.data if hasattr(buf, 'data') else buf
-        np.copyto(self.frame_buffers[key], np.frombuffer(data, dtype=np.uint8, count=self.frame_copy_size))
+        if key in frame_ids:
+          frame_copies[key] = copy_stable_frame(buf, frame_ids[key], self.frame_copy_size)
+        else:
+          data = buf.data if hasattr(buf, 'data') else buf
+          frame_copies[key] = np.array(np.frombuffer(data, dtype=np.uint8, count=self.frame_copy_size), copy=True)
+      for key, data in frame_copies.items():
+        np.copyto(self.frame_buffers[key], data)
     else:
       for key, buf in bufs.items():
         ptr = np.frombuffer(buf.data, dtype=np.uint8).ctypes.data
@@ -242,7 +264,7 @@ class ModelState(ModelStateBase):
     self.numpy_inputs['big_tfm'][:, :] = transforms[self._wide_key].reshape(3, 3)
 
     if self.run_model is not None:
-      outs, = self.run_model(**{k: self.input_queues[k] for k in MODELD_INPUTS})
+      outs, = self.run_model(**{k: self.input_queues[k] for k in self.modeld_inputs})
       raw_outputs = outs
     else:
       assert self.warp is not None and self.run_policy is not None
@@ -291,7 +313,8 @@ class ModelState(ModelStateBase):
     return outputs
 
   def get_action_from_model(self, model_output: dict[str, np.ndarray], prev_action: log.ModelDataV2.Action,
-                            lat_action_t: float, long_action_t: float, v_ego: float) -> log.ModelDataV2.Action:
+                            lat_action_t: float, long_action_t: float, v_ego: float,
+                            blendful: Callable[[float], float] | None = None) -> log.ModelDataV2.Action:
     if 'action' not in model_output:
       plan = model_output['plan'][0]
       desired_accel = get_accel_from_plan(plan[:, Plan.VELOCITY][:, 0], plan[:, Plan.ACCELERATION][:, 0], self.constants.T_IDXS,
@@ -302,7 +325,36 @@ class ModelState(ModelStateBase):
       desired_curvature = get_curvature_from_output(model_output, curvature_plan, v_ego, lat_action_t, self.mlsim)
     else:
       desired_accel = model_output['action'][0, 1]
-      desired_curvature = model_output['action'][0, 0] / (max(1.0, v_ego))**2
+      # Same lateral lookahead as the stock modeld path: sample the plan 5 m ahead so a
+      # low-speed corner is entered while it is still 5 m away. See the constants and
+      # the route 000001af/000001b0 evidence next to lateral_lookahead_time.
+      tau = None
+      plan = model_output.get('plan')
+      if plan is not None and len(plan) and np.ndim(plan) == 3:
+        tau = lateral_lookahead_time(np.asarray(plan[0][:, Plan.POSITION][:, 0], dtype=np.float64),
+                                     np.asarray(self.constants.T_IDXS, dtype=np.float64))
+        if tau is not None:
+          # Never look less far ahead than the head already did; see the stock path.
+          tau = max(tau, float(lat_action_t))
+      if tau is None:
+        desired_curvature = model_output['action'][0, 0] / (max(1.0, v_ego))**2
+      else:
+        # Same planplus blend as the branch above: only the horizon changes here, the
+        # curvature source stays whatever the model and PlanplusControl ask for.
+        curvature_plan = (plan[0] + (self.PLANPLUS_CONTROL - 1.0) * model_output['planplus'][0]
+                          if 'planplus' in model_output and self.PLANPLUS_CONTROL != 1.0 else plan[0])
+        # get_curvature_from_plan directly, not get_curvature_from_output: the latter
+        # prefers a baked-in `desired_curvature`, which would silently ignore the
+        # horizon this branch just chose and make the two backends disagree again.
+        desired_curvature = get_curvature_from_plan(curvature_plan[:, Plan.T_FROM_CURRENT_EULER][:, 2],
+                                                    curvature_plan[:, Plan.ORIENTATION_RATE][:, 2],
+                                                    self.constants.T_IDXS, v_ego, tau)
+
+    # Same position as the stock modeld path: before smoothing, so the correction is
+    # smoothed like any other curvature source. Blendful skips low speeds internally,
+    # so passing the callable unconditionally is safe.
+    if blendful is not None:
+      desired_curvature += blendful(desired_curvature)
 
     stop = v_ego < 0.3 and desired_accel < 0.1
     desired_accel = smooth_value(desired_accel, prev_action.desiredAcceleration, self.LONG_SMOOTH_SECONDS)
@@ -354,6 +406,13 @@ def main(demo=False):
   cloudlog.warning(f"connected main cam with buffer size: {vipc_client_main.buffer_len} ({vipc_client_main.width} x {vipc_client_main.height})")
   if use_extra_client:
     cloudlog.warning(f"connected extra cam with buffer size: {vipc_client_extra.buffer_len} ({vipc_client_extra.width} x {vipc_client_extra.height})")
+    # 两路共用按主摄尺寸编译的图像输入，尺寸不同会使第二路读到错误的像素平面。
+    if not extra_camera_geometry_matches_model((vipc_client_main.width, vipc_client_main.height),
+                                               (vipc_client_extra.width, vipc_client_extra.height)):
+      cloudlog.error("extra cam %dx%d does not match the model's %dx%d; dropping the extra input",
+                     vipc_client_extra.width, vipc_client_extra.height,
+                     vipc_client_main.width, vipc_client_main.height)
+      use_extra_client = False
 
   cloudlog.warning("loading model")
   st = time.monotonic()
@@ -389,9 +448,14 @@ def main(demo=False):
   # messaging
   pub_socks = ["modelV2", "drivingModelData", "cameraOdometry", "modelDataV2SP"] + (["chestnutState"] if CHESTNUT else [])
   pm = PubMaster(pub_socks)
-  sm = SubMaster(["deviceState", "carState", "narrowRoadCameraState", "extrinsicsCalibration", "driverMonitoringState", "carControl", "lateralDelay"])
+  sm = SubMaster(["deviceState", "carState", "narrowRoadCameraState", "extrinsicsCalibration",
+                  "driverMonitoringState", "carControl", "lateralDelay", "carStateSP"])
 
   publish_state = PublishState()
+  try:
+    lane_line_check = int(params.get("LaneLineCheck") or 0)
+  except (TypeError, ValueError):
+    lane_line_check = 0
   chestnut_state = ChestnutState(pm, model.chestnut) if CHESTNUT else None
 
   # setup filter to track dropped frames
@@ -402,11 +466,21 @@ def main(demo=False):
 
   model_transform_main = np.zeros((3, 3), dtype=np.float32)
   model_transform_extra = np.zeros((3, 3), dtype=np.float32)
+  model_transform_extra_fallback = np.zeros((3, 3), dtype=np.float32)
+  extra_wide_prev = None
   live_calib_seen = False
   buf_main, buf_extra = None, None
   meta_main = FrameMeta()
   meta_extra = FrameMeta()
+  extra_frame_selector = ExtraFrameSelector(EXTRA_SYNC_TOLERANCE_NS)
   camera_offset_helper = CameraOffsetHelper()
+  # Second-input bookkeeping, same semantics as the stock modeld path: a configured
+  # wide stream only counts as "in use" once its frames actually reach the model.
+  wide_cam_misses = 0
+  wide_cam_reported = None
+  wide_on_frames = 0
+  wide_off_frames = 0
+  wide_active = False
 
 
   if demo:
@@ -422,39 +496,62 @@ def main(demo=False):
   DH = DesireHelper()
   meta_constants = load_meta_constants()
   RELC = RoadEdgeLaneChangeController()
+  blendful = Blendful()
+  blendful_enabled = params.get_bool("Blendful")
+  if blendful_enabled:
+    cloudlog.warning("blendful enabled")
 
   while True:
-    # Keep receiving frames until we are at least 1 frame ahead of previous extra frame
-    while meta_main.timestamp_sof < meta_extra.timestamp_sof + 25000000:
-      buf_main = vipc_client_main.recv()
-      meta_main = FrameMeta(vipc_client_main)
-      if buf_main is None:
-        break
-
+    # The main camera is the clock. Never block on the optional extra stream: doing
+    # that lets main VIPC fill up and is what produced frameDropPerc > 1% on this rig.
+    buf_main = vipc_client_main.recv()
+    meta_main = FrameMeta(vipc_client_main)
     if buf_main is None:
       cloudlog.debug("vipc_client_main no frame")
       continue
 
+    extra_is_wide = False
     if use_extra_client:
-      # Keep receiving extra frames until frame id matches main camera
-      while True:
-        buf_extra = vipc_client_extra.recv()
-        meta_extra = FrameMeta(vipc_client_extra)
-        if buf_extra is None or meta_main.timestamp_sof < meta_extra.timestamp_sof + 25000000:
-          break
-
-      if buf_extra is None:
-        cloudlog.debug("vipc_client_extra no frame")
-        continue
-
-      if abs(meta_main.timestamp_sof - meta_extra.timestamp_sof) > 10000000:
-        cloudlog.error(f"frames out of sync! main: {meta_main.frame_id} ({meta_main.timestamp_sof / 1e9:.5f}),\
-                       extra: {meta_extra.frame_id} ({meta_extra.timestamp_sof / 1e9:.5f})")
-
+      # Choose the closest arrived candidate; retaining only the newest frame
+      # unnecessarily falls back when an older candidate is the better pair.
+      selected_extra = extra_frame_selector.select(vipc_client_extra, meta_main.timestamp_sof)
+      if selected_extra is not None:
+        buf_extra = selected_extra.buffer
+        meta_extra = selected_extra.meta
+        extra_is_wide = True
+        wide_cam_misses = 0
+      else:
+        buf_extra = buf_main
+        meta_extra = meta_main
+        wide_cam_misses = extra_frame_selector.consecutive_misses
+        if wide_cam_misses > MAX_EXTRA_MISSES:
+          cloudlog.error("wide camera stopped delivering; falling back to single camera")
+          use_extra_client = False
+          wide_cam_misses = 0
     else:
       # Use single camera
       buf_extra = buf_main
       meta_extra = meta_main
+
+    # Publish what the model actually received, not the stream configuration. A wide
+    # camera whose pairs all miss the sync window contributes nothing, and the HUD
+    # would otherwise claim the model is looking through it. 10 frames of hysteresis
+    # at 20 Hz keeps a single late pair from flapping the indicator.
+    if extra_is_wide:
+      wide_on_frames += 1
+      wide_off_frames = 0
+    else:
+      wide_off_frames += 1
+      wide_on_frames = 0
+
+    if wide_on_frames >= 10:
+      wide_active = True
+    elif wide_off_frames >= 10 or not use_extra_client:
+      wide_active = False
+
+    if wide_active != wide_cam_reported:
+      params.put_bool("WideCameraActive", wide_active)
+      wide_cam_reported = wide_active
 
     sm.update(0)
     desire = DH.desire
@@ -462,18 +559,35 @@ def main(demo=False):
     frame_id = sm["narrowRoadCameraState"].frameId
     v_ego = max(sm["carState"].vEgo, 0.)
     if sm.frame % 60 == 0:
-      model.lat_delay = get_lat_delay(params, sm["lateralDelay"].lateralDelay)
+      model.lat_delay, model.lat_delay_source = select_lat_delay(params, sm["lateralDelay"].lateralDelay)
       model.PLANPLUS_CONTROL = params.get("PlanplusControl", return_default=True)
       camera_offset_helper.set_offset(params.get("CameraOffset", return_default=True))
     lat_delay = model.lat_delay + model.LAT_SMOOTH_SECONDS
-    if sm.updated["extrinsicsCalibration"] and sm.seen['narrowRoadCameraState'] and sm.seen['deviceState']:
+    if ((sm.updated["extrinsicsCalibration"] or extra_wide_prev is None or extra_is_wide != extra_wide_prev) and
+        sm.seen['narrowRoadCameraState'] and sm.seen['deviceState']):
       device_from_calib_euler = np.array(sm["extrinsicsCalibration"].rpyCalib, dtype=np.float32)
-      dc = DEVICE_CAMERAS[(str(sm['deviceState'].deviceType), str(sm['narrowRoadCameraState'].sensor))]
+      # 启动时标定可能为空；使用中性投影，避免崩溃或把零矩阵送入模型。
+      if device_from_calib_euler.shape != (3,) or not np.isfinite(device_from_calib_euler).all():
+        device_from_calib_euler = np.zeros(3, dtype=np.float32)
+      dc = device_camera_config(sm['deviceState'].deviceType, sm['narrowRoadCameraState'].sensor)
       main_intrinsics = dc.wide_road.intrinsics if main_wide_camera else dc.narrow_road.intrinsics
       model_transform_main = get_warp_matrix(device_from_calib_euler, main_intrinsics, False).astype(np.float32)
-      model_transform_extra = get_warp_matrix(device_from_calib_euler, dc.wide_road.intrinsics, True).astype(np.float32)
-      model_transform_main, model_transform_extra = camera_offset_helper.update(model_transform_main, model_transform_extra, sm, main_wide_camera)
+      # 第二路回退主摄时，镜头内参跟随实际画面；模型的 sbigmodel 目标坐标仍保持不变。
+      has_wide_camera = extra_is_wide or main_wide_camera
+      extra_intrinsics = dc.wide_road.intrinsics if has_wide_camera else dc.narrow_road.intrinsics
+      model_transform_extra = get_warp_matrix(device_from_calib_euler, extra_intrinsics, True).astype(np.float32)
+      # 无论这一帧是否真的拿到宽摄，都预先算好“主摄填第二路”的投影。
+      # 拷贝阶段发现宽帧被覆盖时可在同一轮立即回退，不必等下一帧重算。
+      fallback_intrinsics = dc.wide_road.intrinsics if main_wide_camera else dc.narrow_road.intrinsics
+      model_transform_extra_fallback = get_warp_matrix(device_from_calib_euler, fallback_intrinsics, True).astype(np.float32)
+      calib_height = sm["extrinsicsCalibration"].height
+      height = calib_height[0] if calib_height else 1.22
+      model_transform_main, model_transform_extra, model_transform_extra_fallback = camera_offset_helper.update_transforms(
+        ((model_transform_main, main_intrinsics), (model_transform_extra, extra_intrinsics),
+         (model_transform_extra_fallback, fallback_intrinsics)),
+        device_from_calib_euler, height)
       live_calib_seen = True
+      extra_wide_prev = extra_is_wide
 
     traffic_convention = np.zeros(2)
     traffic_convention[int(is_rhd)] = 1
@@ -493,11 +607,29 @@ def main(demo=False):
     frame_drop_ratio = frames_dropped / (1 + frames_dropped)
 
     bufs = {name: buf_extra if 'big' in name else buf_main for name in model.vision_input_names}
+    frame_is_wide = extra_is_wide
+    if extra_is_wide and not extra_frame_selector.is_current(selected_extra):
+      # VisionIPC 的宽摄帧是共享内存，主摄准备期间可能已被下一张覆盖。
+      # 编号已经变化时整轮退回主摄，避免把新画面配旧时间戳送进模型。
+      buf_extra = buf_main
+      bufs = dict.fromkeys(model.vision_input_names, buf_main)
+      meta_extra = meta_main
+      extra_is_wide = False
+      wide_active = False
+      wide_on_frames = 0
+      wide_off_frames += 1
+      frame_is_wide = False
+      if use_extra_client and wide_off_frames < 10:
+        extra_wide_prev = None
+    elif extra_wide_prev is True:
+      # 回退主摄时第二路必须重新按主摄内参投影，不能沿用上一轮的宽摄矩阵。
+      extra_wide_prev = None
+      frame_is_wide = False
     transforms = {name: model_transform_extra if 'big' in name else model_transform_main for name in model.vision_input_names}
 
     frame_delay = DT_MDL # compensate for time passed since the frame was captured: current_time - timestamp_eof is 50ms on average
     action_delay = DT_MDL / 2 # middle of the interval between model output (current state) and next frame (expected state)
-    lat_action_t = lat_delay + frame_delay + action_delay
+    lat_action_t = lateral_action_time(model.lat_delay, model.LAT_SMOOTH_SECONDS, frame_delay, action_delay)
     long_action_t = long_delay + frame_delay + action_delay
 
     inputs:dict[str, np.ndarray] = {
@@ -512,10 +644,26 @@ def main(demo=False):
       inputs['action_t'] = np.array([lat_action_t, long_action_t], dtype=np.float32)
 
     mt1 = time.perf_counter()
+    frame_ids = {'img': meta_main.frame_id, 'big_img': meta_extra.frame_id}
     try:
       send_chestnut = (chestnut_state is not None and
                        run_count % round(model.constants.MODEL_FREQ / SERVICE_LIST['chestnutState'].frequency) == 0)
-      model_output = model.run(bufs, transforms, inputs, chestnut_state.send if send_chestnut else None)
+      model_output = model.run(bufs, transforms, inputs, chestnut_state.send if send_chestnut else None,
+                               frame_ids=frame_ids)
+    except ExtraFrameChanged:
+      frame_is_wide = False
+      buf_extra = buf_main
+      transforms = {name: model_transform_extra_fallback if 'big' in name else model_transform_main
+                    for name in model.vision_input_names}
+      frame_ids['big_img'] = buf_main.frame_id
+      model_output = model.run(dict.fromkeys(model.vision_input_names, buf_main), transforms, inputs,
+                               chestnut_state.send if send_chestnut else None, frame_ids=frame_ids)
+      meta_extra = meta_main
+      extra_is_wide = False
+      wide_active = False
+      wide_on_frames = 0
+      wide_off_frames += 1
+      extra_wide_prev = None
     except Exception:
       if not params.get_bool("ChestnutActive"):
         raise
@@ -526,6 +674,11 @@ def main(demo=False):
       model = small_model
       if chestnut_state is not None:
         chestnut_state.big = False
+      # Recompute everything derived from the model bundle; otherwise the small
+      # model keeps the big model's smoothing constant and metadata.
+      long_delay = CP.longitudinalActuatorDelay + model.LONG_SMOOTH_SECONDS
+      meta_constants = load_meta_constants()
+      blendful_enabled = params.get_bool("Blendful")
       run_count = 0
       model_output = None
     mt2 = time.perf_counter()
@@ -536,11 +689,28 @@ def main(demo=False):
       drivingdata_send = messaging.new_message('drivingModelData')
       posenet_send = messaging.new_message('cameraOdometry')
       mdv2sp_send = messaging.new_message('modelDataV2SP')
+      fill_lateral_delay_debug(mdv2sp_send.modelDataV2SP, model, model.LAT_SMOOTH_SECONDS, lat_action_t, meta_main.frame_id,
+                              model_output, prev_action.desiredCurvature, v_ego)
 
-      action = model.get_action_from_model(model_output, prev_action, lat_action_t, long_action_t, v_ego)
+      # Only correct while the driver is not asking for a manoeuvre: a lane change or
+      # a turn has the model deliberately leaving the lane centre, and pulling it back
+      # would fight the intent.
+      blendful_active = desire == log.Desire.none and DH.lane_change_state == log.LaneChangeState.off
+      action = model.get_action_from_model(model_output, prev_action, lat_action_t, long_action_t, v_ego,
+                                           blendful=partial(blendful.update, model_output, v_ego,
+                                                            blendful_active, enabled=blendful_enabled))
+      # Telemetry so the correction can be inspected onroad instead of inferred from
+      # desiredCurvature. All of it is read-only state left by update().
+      mdv2sp_send.modelDataV2SP.blendfulCurvature = float(blendful.curvature)
+      mdv2sp_send.modelDataV2SP.blendfulTrust = float(blendful.trust)
+      mdv2sp_send.modelDataV2SP.modelCurvature = float(blendful.model_curvature)
+      mdv2sp_send.modelDataV2SP.blendfulGoingAround = bool(blendful.going_around)
+      mdv2sp_send.modelDataV2SP.blendfulLeftProb = float(blendful.l_prob)
+      mdv2sp_send.modelDataV2SP.blendfulRightProb = float(blendful.r_prob)
+      mdv2sp_send.modelDataV2SP.blendfulLaneWidth = float(blendful.lane_width.x)
       prev_action = action
       fill_model_msg(drivingdata_send, modelv2_send, model_output, action,
-                     publish_state, meta_main.frame_id, meta_extra.frame_id, frame_id,
+                     publish_state, meta_main.frame_id, frame_id if frame_is_wide else meta_main.frame_id, frame_id,
                      frame_drop_ratio, meta_main.timestamp_eof, model_execution_time, live_calib_seen, meta_constants)
       modelv2_send.modelV2.big = model.chestnut
 
@@ -549,7 +719,13 @@ def main(demo=False):
       r_lane_change_prob = desire_state[log.Desire.laneChangeRight]
       lane_change_prob = l_lane_change_prob + r_lane_change_prob
       left_edge, right_edge = RELC.update_and_fill(modelv2_send.modelV2, mdv2sp_send.modelDataV2SP, v_ego)
-      DH.update(sm['carState'], sm['carControl'].latActive, lane_change_prob, left_edge, right_edge)
+      DH.update(sm['carState'], sm['carControl'].latActive, lane_change_prob, left_edge, right_edge,
+                blinker_latched=sm['carStateSP'].blinkerLatched,
+                left_lane_line=sm['carStateSP'].leftLaneLine,
+                right_lane_line=sm['carStateSP'].rightLaneLine,
+                lane_line_check=lane_line_check,
+                blindspot_unavailable_left=sm['carStateSP'].leftBlindspotUnavailable,
+                blindspot_unavailable_right=sm['carStateSP'].rightBlindspotUnavailable)
       modelv2_send.modelV2.meta.laneChangeState = DH.lane_change_state
       modelv2_send.modelV2.meta.laneChangeDirection = DH.lane_change_direction
       mdv2sp_send.valid = modelv2_send.valid
